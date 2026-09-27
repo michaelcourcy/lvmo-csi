@@ -13,11 +13,15 @@ import (
 type recordingRunner struct {
 	calls      []string
 	failCreate bool
+	onRun      func(string)
 }
 
 func (r *recordingRunner) Run(_ context.Context, name string, args ...string) ([]byte, error) {
 	call := name + " " + strings.Join(args, " ")
 	r.calls = append(r.calls, call)
+	if r.onRun != nil {
+		r.onRun(call)
+	}
 	if name == "lvcreate" && r.failCreate {
 		return nil, errors.New("interrupted create")
 	}
@@ -148,5 +152,28 @@ func TestNewBlockIgnoresStorageClassFilesystem(t *testing.T) {
 		if strings.HasPrefix(call, "mkfs.") || strings.HasPrefix(call, "mount ") {
 			t.Fatalf("raw device modified: %s", call)
 		}
+	}
+}
+
+func TestFailedReadyPersistenceCannotAcknowledgeRetry(t *testing.T) {
+	r := &recordingRunner{}
+	b := testBackend(t, r)
+	root := b.cfg.Root
+	r.onRun = func(call string) {
+		if call == "targetcli saveconfig" {
+			b.cfg.Root = root + "/missing"
+		}
+	}
+	req := &pb.CreateVolumeRequest{Name: "persistence-failure", Bytes: 128 << 20, Protocol: "iscsi", Block: true}
+	if _, err := b.CreateVolume(context.Background(), req); err == nil {
+		t.Fatal("expected state write failure")
+	}
+	b.cfg.Root = root
+	r.onRun = nil
+	if _, err := b.GetVolume(context.Background(), &pb.ID{Id: ID("v-", req.Name)}); status.Code(err) != codes.NotFound {
+		t.Fatalf("uncommitted volume advertised ready: %v", err)
+	}
+	if _, err := b.CreateVolume(context.Background(), req); status.Code(err) != codes.Aborted {
+		t.Fatalf("uncommitted retry acknowledged: %v", err)
 	}
 }

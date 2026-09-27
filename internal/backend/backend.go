@@ -321,7 +321,11 @@ func (b *Backend) CreateVolume(ctx context.Context, r *pb.CreateVolumeRequest) (
 		}
 	}
 	v.Ready = true
-	return proto.Clone(v).(*pb.Volume), internal(b.save())
+	if err := b.save(); err != nil {
+		v.Ready = false
+		return nil, internal(err)
+	}
+	return proto.Clone(v).(*pb.Volume), nil
 }
 func (b *Backend) lvSize(ctx context.Context, vg, id string) (int64, error) {
 	out, e := b.run.Run(ctx, "lvs", "--noheadings", "--units", "b", "--nosuffix", "-o", "lv_size", device(vg, id))
@@ -534,8 +538,13 @@ func (b *Backend) ExpandVolume(ctx context.Context, r *pb.ExpandRequest) (*pb.Vo
 			return nil, internal(err)
 		}
 	}
+	previous := v.Bytes
 	v.Bytes = size
-	return proto.Clone(v).(*pb.Volume), internal(b.save())
+	if err := b.save(); err != nil {
+		v.Bytes = previous
+		return nil, internal(err)
+	}
+	return proto.Clone(v).(*pb.Volume), nil
 }
 func (b *Backend) CreateSnapshot(ctx context.Context, r *pb.SnapshotRequest) (*pb.Snapshot, error) {
 	b.mu.Lock()
@@ -574,7 +583,11 @@ func (b *Backend) CreateSnapshot(ctx context.Context, r *pb.SnapshotRequest) (*p
 		return nil, internal(err)
 	}
 	s.Ready = true
-	return proto.Clone(s).(*pb.Snapshot), internal(b.save())
+	if err := b.save(); err != nil {
+		s.Ready = false
+		return nil, internal(err)
+	}
+	return proto.Clone(s).(*pb.Snapshot), nil
 }
 func (b *Backend) DeleteSnapshot(ctx context.Context, r *pb.ID) (*pb.Empty, error) {
 	b.mu.Lock()
