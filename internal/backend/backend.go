@@ -206,6 +206,11 @@ func (b *Backend) CreateVolume(ctx context.Context, r *pb.CreateVolumeRequest) (
 		return nil, status.Error(codes.InvalidArgument, "NFS does not support block access")
 	}
 	fs := r.Filesystem
+	if r.Block {
+		// A StorageClass filesystem preference must never format a new raw device.
+		// Snapshot/volume clones recover their source filesystem metadata below.
+		fs = ""
+	}
 	if fs == "" && !r.Block {
 		fs = "ext4"
 	}
@@ -254,7 +259,7 @@ func (b *Backend) CreateVolume(ctx context.Context, r *pb.CreateVolumeRequest) (
 		return nil, status.Error(codes.Aborted, "previous volume deletion is reclaiming storage; retry")
 	}
 	if v := b.state.Volumes[id]; v != nil {
-		if v.Bytes < size || v.Protocol != r.Protocol || v.Vg != vg || v.Block != r.Block || v.SourceSnapshot != r.SourceSnapshot || v.SourceVolume != r.SourceVolume {
+		if v.Bytes < size || v.Protocol != r.Protocol || v.Vg != vg || v.Block != r.Block || v.Filesystem != fs || v.SourceSnapshot != r.SourceSnapshot || v.SourceVolume != r.SourceVolume {
 			return nil, status.Error(codes.AlreadyExists, "incompatible existing volume")
 		}
 		if !v.Ready {

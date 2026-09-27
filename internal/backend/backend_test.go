@@ -133,3 +133,20 @@ func TestISCSIOwnershipSurvivesRestart(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestNewBlockIgnoresStorageClassFilesystem(t *testing.T) {
+	r := &recordingRunner{}
+	b := testBackend(t, r)
+	v, err := b.CreateVolume(context.Background(), &pb.CreateVolumeRequest{Name: "blank-block", Bytes: 128 << 20, Protocol: "iscsi", Block: true, Filesystem: "ext4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Filesystem != "" {
+		t.Fatal("new raw device must be unformatted")
+	}
+	for _, call := range r.calls {
+		if strings.HasPrefix(call, "mkfs.") || strings.HasPrefix(call, "mount ") {
+			t.Fatalf("raw device modified: %s", call)
+		}
+	}
+}
