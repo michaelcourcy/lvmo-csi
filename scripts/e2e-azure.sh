@@ -148,7 +148,12 @@ done
 
 # Verify physical storage reclamation before removing the disposable server.
 {
+ echo '#!/bin/bash'
+ echo '('
  cat "$root/scripts/check-cleanup.sh"
- echo 'echo LVMO_EXIT=0'
+ echo ')'
+ echo 'result=$?'
+ echo 'echo LVMO_EXIT=$result'
+ echo 'exit "$result"'
 } > "$work/audit.sh"
 remote "$work/audit.sh"
