@@ -670,7 +670,17 @@ func (b *Backend) Reconcile(ctx context.Context) error {
 			b.state.Deleting[v.Id] = true
 		}
 		if v.Ready && !b.state.Deleting[v.Id] {
+			if e := b.cmd(ctx, "lvchange", "--activate", "y", "--ignoreactivationskip", device(v.Vg, v.Id)); e != nil {
+				return e
+			}
 			if e := b.publish(ctx, v); e != nil {
+				return e
+			}
+		}
+	}
+	for _, snapshot := range b.state.Snapshots {
+		if snapshot.Ready && !b.state.SnapshotDeleting[snapshot.Id] {
+			if e := b.cmd(ctx, "lvchange", "--activate", "y", "--ignoreactivationskip", device(snapshot.Vg, snapshot.Id)); e != nil {
 				return e
 			}
 		}
