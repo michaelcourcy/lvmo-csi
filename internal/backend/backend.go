@@ -46,6 +46,7 @@ type Config struct {
 	VGs                         []string
 }
 type state struct {
+	SnapshotDeleting  map[string]bool         `json:"snapshot_deleting,omitempty"`
 	Owners            map[string]string       `json:"owners,omitempty"`
 	SnapshotOrder     map[string]uint64       `json:"snapshot_order,omitempty"`
 	NextSnapshotOrder uint64                  `json:"next_snapshot_order,omitempty"`
@@ -101,6 +102,9 @@ func New(cfg Config, run Runner) (*Backend, error) {
 	}
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
+	}
+	if b.state.SnapshotDeleting == nil {
+		b.state.SnapshotDeleting = map[string]bool{}
 	}
 	if b.state.Owners == nil {
 		b.state.Owners = map[string]string{}
@@ -215,7 +219,7 @@ func (b *Backend) CreateVolume(ctx context.Context, r *pb.CreateVolumeRequest) (
 	size := round(r.Bytes)
 	if r.SourceSnapshot != "" {
 		s := b.state.Snapshots[r.SourceSnapshot]
-		if s == nil || !s.Ready {
+		if s == nil || !s.Ready || b.state.SnapshotDeleting[s.Id] {
 			return nil, status.Error(codes.NotFound, "snapshot not found")
 		}
 		if s.Vg != vg {
@@ -479,7 +483,11 @@ func (b *Backend) DeleteVolume(ctx context.Context, r *pb.ID) (*pb.Empty, error)
 			return nil, internal(err)
 		}
 	}
-	if b.cmd(ctx, "lvs", device(v.Vg, v.Id)) == nil {
+	exists, err := b.lvExists(ctx, v.Vg, v.Id)
+	if err != nil {
+		return nil, internal(err)
+	}
+	if exists {
 		if err := b.cmd(ctx, "lvremove", "--yes", device(v.Vg, v.Id)); err != nil {
 			return nil, internal(err)
 		}
@@ -529,6 +537,9 @@ func (b *Backend) CreateSnapshot(ctx context.Context, r *pb.SnapshotRequest) (*p
 		return nil, status.Error(codes.InvalidArgument, "name and source required")
 	}
 	id := ID("s-", r.Name)
+	if b.state.SnapshotDeleting[id] {
+		return nil, status.Error(codes.Aborted, "snapshot deletion is in progress")
+	}
 	if s := b.state.Snapshots[id]; s != nil {
 		if s.VolumeId != r.VolumeId {
 			return nil, status.Error(codes.AlreadyExists, "different source")
@@ -568,13 +579,22 @@ func (b *Backend) DeleteSnapshot(ctx context.Context, r *pb.ID) (*pb.Empty, erro
 	if s == nil {
 		return &pb.Empty{}, nil
 	}
-	if b.cmd(ctx, "lvs", device(s.Vg, s.Id)) == nil {
+	b.state.SnapshotDeleting[s.Id] = true
+	if err := b.save(); err != nil {
+		return nil, internal(err)
+	}
+	exists, err := b.lvExists(ctx, s.Vg, s.Id)
+	if err != nil {
+		return nil, internal(err)
+	}
+	if exists {
 		if err := b.cmd(ctx, "lvremove", "--yes", device(s.Vg, s.Id)); err != nil {
 			return nil, internal(err)
 		}
 	}
 	delete(b.state.Snapshots, r.Id)
 	delete(b.state.SnapshotOrder, r.Id)
+	delete(b.state.SnapshotDeleting, r.Id)
 	return &pb.Empty{}, internal(b.save())
 }
 func (b *Backend) ListSnapshots(context.Context, *pb.Empty) (*pb.Snapshots, error) {
@@ -582,7 +602,7 @@ func (b *Backend) ListSnapshots(context.Context, *pb.Empty) (*pb.Snapshots, erro
 	defer b.mu.Unlock()
 	out := &pb.Snapshots{}
 	for _, s := range b.state.Snapshots {
-		if s.Ready {
+		if s.Ready && !b.state.SnapshotDeleting[s.Id] {
 			out.Snapshots = append(out.Snapshots, proto.Clone(s).(*pb.Snapshot))
 		}
 	}
@@ -675,7 +695,7 @@ func (b *Backend) Reap(ctx context.Context) {
 				}
 			}
 			for id, s := range b.state.Snapshots {
-				if !s.Ready {
+				if !s.Ready || b.state.SnapshotDeleting[id] {
 					snapshots = append(snapshots, id)
 				}
 			}
@@ -750,4 +770,12 @@ func (b *Backend) refreshExports(ctx context.Context) error {
 	err := b.cmd(ctx, "exportfs", "-ra")
 	b.lastExport = time.Now().Unix()
 	return err
+}
+
+func (b *Backend) lvExists(ctx context.Context, vg, id string) (bool, error) {
+	out, err := b.run.Run(ctx, "lvs", "--noheadings", "-o", "lv_name", "--select", "lv_name="+id, vg)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(out)) == id, nil
 }

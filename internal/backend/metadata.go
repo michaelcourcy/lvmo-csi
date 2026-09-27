@@ -175,7 +175,7 @@ func (b *Backend) metadata(ctx context.Context, r *pb.MetadataRequest) (int64, [
 		return 0, nil, status.Error(codes.InvalidArgument, "invalid metadata request")
 	}
 	s := b.state.Snapshots[r.Snapshot]
-	if s == nil || !s.Ready {
+	if s == nil || !s.Ready || b.state.SnapshotDeleting[s.Id] {
 		return 0, nil, status.Error(codes.NotFound, "snapshot not found")
 	}
 	if r.StartingOffset > s.Bytes {
@@ -189,7 +189,7 @@ func (b *Backend) metadata(ctx context.Context, r *pb.MetadataRequest) (int64, [
 	bid := int64(-1)
 	if r.BaseSnapshot != "" {
 		base := b.state.Snapshots[r.BaseSnapshot]
-		if base == nil || !base.Ready {
+		if base == nil || !base.Ready || b.state.SnapshotDeleting[base.Id] {
 			return 0, nil, status.Error(codes.NotFound, "base snapshot not found")
 		}
 		ordered := base.CreatedUnix < s.CreatedUnix
