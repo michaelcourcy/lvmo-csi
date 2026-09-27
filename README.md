@@ -4,6 +4,22 @@ LVM thin volumes for Kubernetes, exported over NFS or iSCSI through one CSI driv
 
 This is an initial implementation for evaluation. It is a single storage server, with no replication or automatic failover. Kasten consumption of the metadata service is **not validated**.
 
+## Architecture
+
+```mermaid
+flowchart LR
+    K[Kubernetes CSI sidecars] -->|CSI gRPC| D[lvmo driver]
+    D -->|Management gRPC| A[lvmo API on Linux]
+    A --> L[LVM thin pools]
+    L -->|NFS files| W[RWX applications]
+    L -->|iSCSI filesystem or block| R[RWO applications]
+    B[Backup client] -->|Authenticated gRPC over TLS| M[Snapshot metadata sidecar]
+    M -->|CSI metadata gRPC| D
+    L -->|iSCSI snapshot clone bytes| B
+```
+
+The metadata path supplies byte ranges; the iSCSI clone supplies the corresponding bytes. Ordinary filesystem backups use filesystem clones and do not require the metadata sidecar.
+
 ## Build
 
 Requires Go 1.26.3. Development scripts target macOS Apple Silicon with Lima, Kind, Helm, kubectl, and Docker CLI.
