@@ -14,8 +14,10 @@ Validation performed on 27 September 2026. This is an evaluation implementation,
 | Native block discard | Kind / iSCSI | Incremental reconstruction correctly replaced previously allocated bytes with zeros |
 | Failed-create recovery | Lima | Failed XFS creation reclaimed; retry with the same name succeeded |
 | Physical cleanup | Fresh local run | No managed volumes, snapshots, leases, tagged LVs, project iSCSI sessions or targets remained |
-| OpenShift deployment | Current Azure cluster, 12 nodes | Controller and all node plugins became ready |
+| OpenShift deployment | OpenShift 4.18.6 / Kubernetes 1.31.6, 12 nodes | Controller and all node plugins became ready |
 | Ordinary snapshot restores | OpenShift, NFS and iSCSI | Same-namespace and cross-namespace restores passed |
+| Public KEP-3314 endpoint | OpenShift, all three source modes | Full/incremental reconstruction, discard, continuation, interruption, concurrency, and access controls passed |
+| CSI reconstruction and failed-create recovery | Azure Ubuntu 24.04 AMD64 | Passed |
 | Release builds | Linux AMD64 and ARM64 | Executables and multiarchitecture OCI image archive built locally |
 
 The external suite excludes disruptive, serial, slow, performance and stress tests. Its reported 7,626 skipped specs include unrelated Kubernetes tests and unsupported driver capabilities; they are not passes. External-suite coverage above is for NFS. Both protocols have separate sanity and snapshot coverage.
