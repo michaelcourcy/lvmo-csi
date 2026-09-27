@@ -43,6 +43,7 @@ func (Exec) Run(ctx context.Context, name string, args ...string) ([]byte, error
 
 type Config struct {
 	Root, Server, Pool, Clients string
+	NFSInsecure                 bool
 	VGs                         []string
 }
 type state struct {
@@ -377,10 +378,7 @@ func (b *Backend) publish(ctx context.Context, v *pb.Volume) error {
 		if err := os.MkdirAll("/etc/exports.d", 0755); err != nil {
 			return err
 		}
-		line := fmt.Sprintf("%s %s(rw,sync,no_subtree_check,no_root_squash,fsid=%s)\n", v.Path, b.cfg.Clients, v.Id[2:10])
-		// fsid is numeric, not a hexadecimal token.
-		n, _ := strconv.ParseUint(v.Id[2:10], 16, 32)
-		line = fmt.Sprintf("%s %s(rw,sync,no_subtree_check,no_root_squash,fsid=%d)\n", v.Path, b.cfg.Clients, n)
+		line := b.nfsExportLine(v)
 		if err := os.WriteFile("/etc/exports.d/lvmo-"+v.Id+".exports", []byte(line), 0644); err != nil {
 			return err
 		}
@@ -783,6 +781,17 @@ func (b *Backend) ReleaseVolume(ctx context.Context, r *pb.VolumeLease) (*pb.Emp
 	}
 	delete(b.state.Owners, r.VolumeId)
 	return &pb.Empty{}, internal(b.save())
+}
+
+// nfsExportLine is shared by provisioning and startup reconciliation via publish.
+func (b *Backend) nfsExportLine(v *pb.Volume) string {
+	options := "rw,sync,no_subtree_check,no_root_squash"
+	if b.cfg.NFSInsecure {
+		options += ",insecure"
+	}
+	// fsid is numeric, not a hexadecimal token.
+	n, _ := strconv.ParseUint(v.Id[2:10], 16, 32)
+	return fmt.Sprintf("%s %s(%s,fsid=%d)\n", v.Path, b.cfg.Clients, options, n)
 }
 
 func (b *Backend) refreshExports(ctx context.Context) error {

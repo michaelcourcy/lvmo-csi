@@ -177,3 +177,30 @@ func TestFailedReadyPersistenceCannotAcknowledgeRetry(t *testing.T) {
 		t.Fatalf("uncommitted retry acknowledged: %v", err)
 	}
 }
+
+func TestNFSExportSourcePortPolicy(t *testing.T) {
+	v := &pb.Volume{Id: "v-12345678abcdef", Path: "/var/lib/lvmo/volumes/v-12345678abcdef"}
+	b := testBackend(t, &recordingRunner{})
+	b.cfg.Clients = "10.0.0.0/24"
+	secure := "/var/lib/lvmo/volumes/v-12345678abcdef 10.0.0.0/24(rw,sync,no_subtree_check,no_root_squash,fsid=305419896)\n"
+	if got := b.nfsExportLine(v); got != secure {
+		t.Fatalf("default export policy changed: %q", got)
+	}
+	b.cfg.NFSInsecure = true
+	insecure := strings.Replace(secure, ",fsid=", ",insecure,fsid=", 1)
+	if got := b.nfsExportLine(v); got != insecure {
+		t.Fatalf("opt-in export missing source-port allowance: %q", got)
+	}
+	// A restarted API uses its current flag, not the prior generated export.
+	restarted, err := New(b.cfg, &recordingRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := restarted.nfsExportLine(v); got != insecure {
+		t.Fatalf("restart lost opt-in: %q", got)
+	}
+	restarted.cfg.NFSInsecure = false
+	if got := restarted.nfsExportLine(v); got != secure {
+		t.Fatalf("disabling flag did not restore default: %q", got)
+	}
+}

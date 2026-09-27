@@ -70,7 +70,7 @@ sudo lvcreate --type thin-pool -L 100G --poolmetadatasize 1G -n lvmo-pool my-vg
 sudo ./bin/lvmo-csi --server=10.0.0.10 -P 50051 my-vg
 ```
 
-`lvmo-csi [-P port] VG...` automatically selects the local IPv4 address used by the default route. `--server` overrides the address Kubernetes nodes use for NFS/iSCSI; set it explicitly for multiple interfaces, NAT, or DNS-based access. `--root` defaults to `/var/lib/lvmo`; preserve this directory together with LVM metadata. `--pool` changes the thin pool name. `--nfs-clients` restricts the NFS export selector (default `*`). XFS requires a volume large enough for its minimum filesystem size (use at least 512Mi).
+`lvmo-csi [-P port] VG...` automatically selects the local IPv4 address used by the default route. `--server` overrides the address Kubernetes nodes use for NFS/iSCSI; set it explicitly for multiple interfaces, NAT, or DNS-based access. `--root` defaults to `/var/lib/lvmo`; preserve this directory together with LVM metadata. `--pool` changes the thin pool name. `--nfs-insecure` allows NFS connections from unprivileged client source ports (default `false`); it applies to all NFS exports managed by this API, including exports regenerated on restart. It changes the source-port policy, not encryption, and does not affect gRPC or iSCSI. `--nfs-clients` restricts the NFS export selector (default `*`). XFS requires a volume large enough for its minimum filesystem size (use at least 512Mi).
 
 Restrict management TCP/50051, NFS TCP/2049, and iSCSI TCP/3260 to trusted cluster nodes. The management API and iSCSI targets intentionally have no authentication; NFS exports use `no_root_squash`. Do not expose these ports publicly. Monitor thin-pool data and metadata space: per-volume size enforcement does not reserve physical capacity, and pool exhaustion affects every volume sharing that pool. Configure LVM's devices file to include only backing PVs, particularly if the server is also an iSCSI initiator.
 
@@ -123,7 +123,7 @@ flowchart LR
 
 The walkthrough creates an NFS RWX PVC, writes data, and restores a snapshot. It targets macOS Apple Silicon. The separate Docker Desktop/Lima topology has not yet been validated end to end; the earlier automated results used Kind inside Lima.
 
-**Release artifacts:** `michaelcourcy/lvmo-csi:v0.1.0-alpha.1` is published on Docker Hub for Linux AMD64 and ARM64. The matching [GitHub release](https://github.com/michaelcourcy/lvmo-csi/releases/tag/v0.1.0-alpha.1) provides the Linux API binaries, checksums, and Helm chart used below.
+**Release artifacts:** `michaelcourcy/lvmo-csi:v0.1.0-alpha.2` is published on Docker Hub for Linux AMD64 and ARM64. The matching [GitHub release](https://github.com/michaelcourcy/lvmo-csi/releases/tag/v0.1.0-alpha.2) provides the Linux API binaries, checksums, and Helm chart used below.
 
 ### 1. Prepare your laptop and select a release
 
@@ -133,7 +133,7 @@ Install and start Docker Desktop. With Homebrew installed:
 brew install lima kind kubectl helm
 mkdir -p ~/lvmo-demo
 cd ~/lvmo-demo
-export LVMO_VERSION=v0.1.0-alpha.1
+export LVMO_VERSION=v0.1.0-alpha.2
 export LVMO_CHART_VERSION=0.1.0  # chart version listed in that release
 export LVMO_RELEASE_URL="https://github.com/michaelcourcy/lvmo-csi/releases/download/$LVMO_VERSION"
 export LVMO_VM=lvmo-storage
@@ -234,7 +234,7 @@ Description=LVMO storage API
 Wants=network-online.target
 After=network-online.target nfs-server.service
 [Service]
-ExecStart=/usr/local/bin/lvmo-csi --server=host.docker.internal -P 50051 lvmo-data
+ExecStart=/usr/local/bin/lvmo-csi --server=host.docker.internal --nfs-insecure -P 50051 lvmo-data
 Restart=on-failure
 [Install]
 WantedBy=multi-user.target
@@ -316,44 +316,13 @@ For another storage VM, create another StorageClass pointing at its reachable AP
 
 ### 7. Write data to an NFS RWX PVC
 
-#### Allow the forwarded NFS connection
+The API service in step 4 uses `--nfs-insecure` for Lima's forwarded connections. Lima opens a new connection to the NFS server, which can use a source port above 1023. The default NFS `secure` policy rejects such ports; `insecure` permits them. This changes a source-port check, not encryption. See [NFS export options](https://www.man7.org/linux/man-pages/man5/exports.5.html).
 
-In this laptop layout, Lima opens a new connection to the NFS server when forwarding traffic. That connection can use a source port above 1023. Linux NFS exports default to `secure`, which requires a privileged client source port; the server may therefore reject the mount even though destination port 2049 is reachable. Direct node-to-server connections, such as the OpenShift validation setup, do not use this Lima forwarding layer. See [NFS export options](https://www.man7.org/linux/man-pages/man5/exports.5.html).
+The flag makes the API include `insecure` in every NFS export it manages, including new PVCs, restored PVCs, and existing exports regenerated on API restart. No per-PVC export edits are needed. Keep the tutorial's Mac listeners bound to `127.0.0.1`; for directly connected storage servers, leave the flag disabled unless this source-port allowance is required.
 
-For this loopback-forwarded lab, the export option `insecure` allows these high source ports. It relaxes the source-port check, not an encryption setting. Keep the tutorial's Mac listeners bound to `127.0.0.1`; this is not a recommendation to change production exports.
+If you installed `v0.1.0-alpha.1`, upgrade the storage API binary using step 3's download and checksum commands with `LVMO_VERSION=v0.1.0-alpha.2` before adding the flag. When replacing a running binary, run `systemctl stop lvmo-api` immediately before the `install` command, then update the service in step 4, run `systemctl daemon-reload`, and start it again. Existing volumes remain in the preserved state directory; you must not rerun the disk, VG, or pool creation commands. The old API does not recognize this flag. Startup reconciliation replaces the earlier manual export workaround with the configured policy.
 
-Version `v0.1.0-alpha.1` has no API flag for this option, so adjust each demo volume's generated export after its PVC becomes Bound. Define this function in the **same laptop terminal** used for the walkthrough. It selects only the export belonging to the named PVC in `lvmo-demo`, keeps a backup, and reloads the exports:
-
-```sh
-allow_forwarded_nfs() {
-  local pvc="$1" pv export_path
-  kubectl -n lvmo-demo wait --for=jsonpath='{.status.phase}'=Bound "pvc/$pvc" --timeout=180s || return
-  pv=$(kubectl -n lvmo-demo get pvc "$pvc" -o jsonpath='{.spec.volumeName}') || return
-  export_path=$(kubectl get pv "$pv" -o jsonpath='{.spec.csi.volumeAttributes.path}') || return
-  limactl shell "$LVMO_VM" sudo bash -s -- "$export_path" <<'SCRIPT'
-set -euo pipefail
-export_path=$1
-volume_id=${export_path##*/}
-[[ $volume_id =~ ^v-[a-f0-9]+$ ]]
-[[ $export_path == "/var/lib/lvmo/volumes/$volume_id" ]]
-export_file="/etc/exports.d/lvmo-$volume_id.exports"
-test -f "$export_file"
-grep -Fq "$export_path " "$export_file"
-if ! grep -q 'rw,insecure,' "$export_file"; then
-  cp -n "$export_file" "$export_file.before-forwarding"
-  sed -i 's/(rw,/(rw,insecure,/' "$export_file"
-fi
-exportfs -ra
-exportfs -v
-SCRIPT
-}
-```
-
-The API can regenerate this file during reconciliation, including on restart. Reapply the function if that happens, and call it for each new restored PVC as shown below. This workaround does not change the driver's default export policy. To revert an adjusted export, restore its `.before-forwarding` backup and run `sudo exportfs -ra` inside Lima.
-
-The observed symptom in this topology was a Bound PVC with `mount.nfs: Operation not permitted`. The source-port explanation remains a hypothesis until the adjustment is tested: after the call below, check that the export displays `insecure` and the pod becomes Ready. Kubelet retries mounts automatically. If it still fails, inspect fresh pod events rather than assuming the diagnosis is confirmed.
-
-Create the PVC and pod, then adjust its export before waiting for the mount:
+Create the PVC and pod:
 
 ```sh
 kubectl create namespace lvmo-demo
@@ -386,7 +355,6 @@ spec:
     persistentVolumeClaim:
       claimName: data
 YAML
-allow_forwarded_nfs data
 kubectl -n lvmo-demo wait --for=condition=Ready pod/writer --timeout=180s
 kubectl -n lvmo-demo exec writer -- sh -c 'echo "hello from lvmo" > /data/message; sync'
 kubectl -n lvmo-demo exec writer -- cat /data/message
@@ -451,7 +419,6 @@ spec:
     persistentVolumeClaim:
       claimName: restored
 YAML
-allow_forwarded_nfs restored
 kubectl -n lvmo-demo wait --for=condition=Ready pod/reader --timeout=180s
 kubectl -n lvmo-demo exec reader -- cat /data/message
 kubectl -n lvmo-demo exec writer -- cat /data/message
