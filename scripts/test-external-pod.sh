@@ -33,7 +33,7 @@ spec:
       case $(uname -m) in aarch64) arch=arm64;; *) arch=amd64;; esac
       version=$(cat /config/kubernetes-version)
       curl -fsSL https://dl.k8s.io/$version/kubernetes-test-linux-$arch.tar.gz | tar -xz -C /tmp kubernetes/test/bin/e2e.test
-      /tmp/kubernetes/test/bin/e2e.test --storage.testdriver=/config/driver.yaml --ginkgo.focus='External.Storage.*lvmo.csi.io' --ginkgo.skip='\[Disruptive\]|\[Serial\]|\[Slow\]|performance|stress' --ginkgo.no-color --ginkgo.timeout=45m --report-dir=/reports
+      /tmp/kubernetes/test/bin/e2e.test --storage.testdriver=/config/driver.yaml --ginkgo.focus='External.Storage.*lvmo.csi.io' --ginkgo.skip='\[Disruptive\]|\[Serial\]|\[Slow\]|performance|stress' --non-blocking-taints=node-role.kubernetes.io/control-plane,node-role.kubernetes.io/master --ginkgo.v --ginkgo.no-color --ginkgo.timeout=45m --report-dir=/reports
     securityContext: {runAsUser: 0}
     volumeMounts:
     - {name: config, mountPath: /config}
