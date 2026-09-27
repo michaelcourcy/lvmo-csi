@@ -24,6 +24,16 @@ func main() {
 	pool := flag.String("pool", "lvmo-pool", "existing thin pool name in every VG")
 	clients := flag.String("nfs-clients", "*", "NFS export client selector")
 	flag.Parse()
+	if *server == "" {
+		// UDP connect selects a local route without sending a packet.
+		conn, err := net.Dial("udp4", "192.0.2.1:9")
+		if err != nil {
+			log.Fatal("cannot select an advertised address; specify --server: ", err)
+		}
+		*server = conn.LocalAddr().(*net.UDPAddr).IP.String()
+		conn.Close()
+	}
+	log.Printf("advertising storage address %s", *server)
 	b, e := backend.New(backend.Config{Root: *root, Server: *server, Pool: *pool, Clients: *clients, VGs: flag.Args()}, backend.Exec{})
 	if e != nil {
 		log.Fatal(e)
