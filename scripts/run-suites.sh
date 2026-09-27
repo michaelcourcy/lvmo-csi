@@ -19,3 +19,5 @@ for suite in "$@"; do
  *) echo "Unknown suite: $suite" >&2; exit 2;;
  esac
 done
+
+bash "$root/scripts/check-cleanup.sh"

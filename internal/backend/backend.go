@@ -300,6 +300,11 @@ func (b *Backend) CreateVolume(ctx context.Context, r *pb.CreateVolumeRequest) (
 	if err = b.publish(ctx, v); err != nil {
 		return nil, internal(err)
 	}
+	if src == "" && v.Protocol == "nfs" {
+		if err = os.Chmod(v.Path, 0777); err != nil {
+			return nil, internal(err)
+		}
+	}
 	if src != "" && v.Protocol == "nfs" {
 		if fs == "xfs" {
 			err = b.cmd(ctx, "xfs_growfs", v.Path)
@@ -359,9 +364,6 @@ func (b *Backend) publish(ctx context.Context, v *pb.Volume) error {
 			if err = b.cmd(ctx, "mount", "-t", v.Filesystem, "-o", opts, device(v.Vg, v.Id), v.Path); err != nil {
 				return err
 			}
-		}
-		if err := os.Chmod(v.Path, 0777); err != nil {
-			return err
 		}
 		if err := os.MkdirAll("/etc/exports.d", 0755); err != nil {
 			return err
