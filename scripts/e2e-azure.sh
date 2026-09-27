@@ -37,27 +37,48 @@ cleanup() {
  exit "$status"
 }
 trap cleanup EXIT
-ssh-keygen -q -t ed25519 -N '' -f "$work/key"
-adminip=${AZURE_ADMIN_CIDR:-$(curl -fsSL https://api.ipify.org)/32}
-az group create -n "$rg" -l "$location" --tags project=lvmo-csi purpose=automated-test >/dev/null
-created=true
-az network nsg create -g "$rg" -n lvmo >/dev/null
-az network nsg rule create -g "$rg" --nsg-name lvmo -n ssh --priority 100 --source-address-prefixes "$adminip" --destination-port-ranges 22 --access Allow --protocol Tcp >/dev/null
-az network nsg rule create -g "$rg" --nsg-name lvmo -n storage --priority 110 --source-address-prefixes "$cidr" --destination-port-ranges 2049 3260 50051 --access Allow --protocol Tcp >/dev/null
-az vm create -g "$rg" -n storage --image Ubuntu2404 --size Standard_D2s_v5 --admin-username lvmo --ssh-key-values "$work/key.pub" --subnet "$subnet" --nsg lvmo --public-ip-sku Standard --os-disk-size-gb 40 > "$work/vm.json"
-ip=$(jq -r .publicIpAddress "$work/vm.json")
-private=$(jq -r .privateIpAddress "$work/vm.json")
-sshargs=(-i "$work/key" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$work/known_hosts" -o ConnectTimeout=10)
-for attempt in {1..30}; do if ssh "${sshargs[@]}" "lvmo@$ip" true; then break; fi; sleep 5; done
+# Transfer only this project's build into a private, short-lived blob container.
+# Azure VM Run Command avoids opening SSH on the existing cluster subnet.
 mkdir -p bin
 for cmd in lvmo-csi lvmo-driver lvmo-metadata; do CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "bin/$cmd" "./cmd/$cmd"; done
 for suite in sanity integration; do CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c -o "bin/$suite.test" "./tests/$suite"; done
 tar --exclude=.git --exclude=.test --exclude=dist -czf "$work/source.tgz" .
-scp "${sshargs[@]}" "$work/source.tgz" "lvmo@$ip:/tmp/lvmo-src.tgz"
-ssh "${sshargs[@]}" "lvmo@$ip" 'mkdir -p /tmp/lvmo-src && tar -xzf /tmp/lvmo-src.tgz -C /tmp/lvmo-src'
-# Arguments below are constrained Azure IPs and release tags, never shell text.
+az group create -n "$rg" -l "$location" --tags project=lvmo-csi purpose=automated-test >/dev/null
+created=true
+account="lvmotest$(date +%s)"
+az storage account create -g "$rg" -n "$account" -l "$location" --sku Standard_LRS --allow-blob-public-access false >/dev/null
+az storage container create --account-name "$account" --name source --public-access off --auth-mode key >/dev/null
+az storage blob upload --account-name "$account" --container-name source --name source.tgz --file "$work/source.tgz" --auth-mode key --overwrite >/dev/null
+expiry=$(python3 -c 'from datetime import datetime,timedelta,timezone; print((datetime.now(timezone.utc)+timedelta(hours=2)).strftime("%Y-%m-%dT%H:%MZ"))')
+sas=$(az storage blob generate-sas --account-name "$account" --container-name source --name source.tgz --permissions r --expiry "$expiry" --https-only --auth-mode key -o tsv)
+az network nsg create -g "$rg" -n lvmo >/dev/null
+az network nsg rule create -g "$rg" --nsg-name lvmo -n storage --priority 110 --source-address-prefixes "$cidr" --destination-port-ranges 2049 3260 50051 --access Allow --protocol Tcp >/dev/null
+ssh-keygen -q -t ed25519 -N '' -f "$work/key"
+az vm create -g "$rg" -n storage --image Ubuntu2404 --size Standard_D2s_v5 --admin-username lvmo --ssh-key-values "$work/key.pub" --subnet "$subnet" --nsg lvmo --public-ip-address "" --os-disk-size-gb 40 > "$work/vm.json"
+private=$(jq -r .privateIpAddress "$work/vm.json")
+remote() {
+ local script=$1
+ az vm run-command invoke -g "$rg" -n storage --command-id RunShellScript --scripts @"$script" > "$work/result.json"
+ jq -r '.value[].message' "$work/result.json"
+ jq -r '.value[].message' "$work/result.json" | grep -q '^LVMO_EXIT=0$'
+}
 [[ ${RELEASE_VERSION:-dev} =~ ^[A-Za-z0-9._-]+$ ]]
-ssh "${sshargs[@]}" "lvmo@$ip" "sudo env STORAGE_SERVER='$private' RELEASE_VERSION='${RELEASE_VERSION:-}' bash /tmp/lvmo-src/scripts/setup-vm.sh"
+cat > "$work/setup.sh" <<SETUP
+#!/bin/bash
+set -e
+curl -fsSL 'https://$account.blob.core.windows.net/source/source.tgz?$sas' -o /tmp/lvmo-src.tgz
+mkdir -p /tmp/lvmo-src
+tar -xzf /tmp/lvmo-src.tgz -C /tmp/lvmo-src
+set +e
+STORAGE_SERVER='$private' RELEASE_VERSION='${RELEASE_VERSION:-}' bash /tmp/lvmo-src/scripts/setup-vm.sh > /tmp/lvmo-setup.log 2>&1
+result=\$?
+tail -n 30 /tmp/lvmo-setup.log
+echo LVMO_EXIT=\$result
+SETUP
+remote "$work/setup.sh"
+# The transfer token is no longer needed once the VM has its source archive.
+az storage blob delete --account-name "$account" --container-name source --name source.tgz --auth-mode key >/dev/null
+unset sas
 kubectl --context "$context" create namespace lvmo-system
 installed=true
 if [[ -z ${RELEASE_VERSION:-} ]]; then
@@ -83,11 +104,26 @@ kubectl --context "$context" apply -f "$root/tests/storageclasses.yaml"
 export API_ENDPOINT="$private:50051"
 for suite in "$@"; do
  case $suite in
- sanity) ssh "${sshargs[@]}" "lvmo@$ip" 'sudo bash /tmp/lvmo-src/scripts/run-suites.sh sanity';;
+ sanity)
+  cat > "$work/suite.sh" <<'REMOTE'
+#!/bin/bash
+bash /tmp/lvmo-src/scripts/run-suites.sh sanity > /tmp/lvmo-sanity.log 2>&1
+result=$?
+tail -n 40 /tmp/lvmo-sanity.log
+echo LVMO_EXIT=$result
+REMOTE
+  remote "$work/suite.sh";;
  snapshots) for sc in lvmo-nfs lvmo-iscsi; do STORAGE_CLASS="$sc" bash "$root/scripts/test-snapshots.sh"; done;;
  external) bash "$root/scripts/test-external-pod.sh";;
  metadata)
-  ssh "${sshargs[@]}" "lvmo@$ip" 'sudo env CSI_ENDPOINT=unix:///tmp/lvmo-csi.sock /tmp/lvmo-src/bin/integration.test -test.v -test.timeout=15m'
+  cat > "$work/suite.sh" <<'REMOTE'
+#!/bin/bash
+CSI_ENDPOINT=unix:///tmp/lvmo-csi.sock /tmp/lvmo-src/bin/integration.test -test.v -test.timeout=15m > /tmp/lvmo-backup.log 2>&1
+result=$?
+cat /tmp/lvmo-backup.log
+echo LVMO_EXIT=$result
+REMOTE
+  remote "$work/suite.sh"
   bash "$root/scripts/enable-metadata.sh"
   for mode in nfs iscsi-filesystem iscsi-block; do TEST_SOURCE_MODE="$mode" bash "$root/scripts/test-metadata.sh"; done;;
  esac
