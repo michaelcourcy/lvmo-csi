@@ -316,6 +316,45 @@ For another storage VM, create another StorageClass pointing at its reachable AP
 
 ### 7. Write data to an NFS RWX PVC
 
+#### Allow the forwarded NFS connection
+
+In this laptop layout, Lima opens a new connection to the NFS server when forwarding traffic. That connection can use a source port above 1023. Linux NFS exports default to `secure`, which requires a privileged client source port; the server may therefore reject the mount even though destination port 2049 is reachable. Direct node-to-server connections, such as the OpenShift validation setup, do not use this Lima forwarding layer. See [NFS export options](https://www.man7.org/linux/man-pages/man5/exports.5.html).
+
+For this loopback-forwarded lab, the export option `insecure` allows these high source ports. It relaxes the source-port check, not an encryption setting. Keep the tutorial's Mac listeners bound to `127.0.0.1`; this is not a recommendation to change production exports.
+
+Version `v0.1.0-alpha.1` has no API flag for this option, so adjust each demo volume's generated export after its PVC becomes Bound. Define this function in the **same laptop terminal** used for the walkthrough. It selects only the export belonging to the named PVC in `lvmo-demo`, keeps a backup, and reloads the exports:
+
+```sh
+allow_forwarded_nfs() {
+  local pvc="$1" pv export_path
+  kubectl -n lvmo-demo wait --for=jsonpath='{.status.phase}'=Bound "pvc/$pvc" --timeout=180s || return
+  pv=$(kubectl -n lvmo-demo get pvc "$pvc" -o jsonpath='{.spec.volumeName}') || return
+  export_path=$(kubectl get pv "$pv" -o jsonpath='{.spec.csi.volumeAttributes.path}') || return
+  limactl shell "$LVMO_VM" sudo bash -s -- "$export_path" <<'SCRIPT'
+set -euo pipefail
+export_path=$1
+volume_id=${export_path##*/}
+[[ $volume_id =~ ^v-[a-f0-9]+$ ]]
+[[ $export_path == "/var/lib/lvmo/volumes/$volume_id" ]]
+export_file="/etc/exports.d/lvmo-$volume_id.exports"
+test -f "$export_file"
+grep -Fq "$export_path " "$export_file"
+if ! grep -q 'rw,insecure,' "$export_file"; then
+  cp -n "$export_file" "$export_file.before-forwarding"
+  sed -i 's/(rw,/(rw,insecure,/' "$export_file"
+fi
+exportfs -ra
+exportfs -v
+SCRIPT
+}
+```
+
+The API can regenerate this file during reconciliation, including on restart. Reapply the function if that happens, and call it for each new restored PVC as shown below. This workaround does not change the driver's default export policy. To revert an adjusted export, restore its `.before-forwarding` backup and run `sudo exportfs -ra` inside Lima.
+
+The observed symptom in this topology was a Bound PVC with `mount.nfs: Operation not permitted`. The source-port explanation remains a hypothesis until the adjustment is tested: after the call below, check that the export displays `insecure` and the pod becomes Ready. Kubelet retries mounts automatically. If it still fails, inspect fresh pod events rather than assuming the diagnosis is confirmed.
+
+Create the PVC and pod, then adjust its export before waiting for the mount:
+
 ```sh
 kubectl create namespace lvmo-demo
 kubectl -n lvmo-demo apply -f - <<'YAML'
@@ -347,6 +386,7 @@ spec:
     persistentVolumeClaim:
       claimName: data
 YAML
+allow_forwarded_nfs data
 kubectl -n lvmo-demo wait --for=condition=Ready pod/writer --timeout=180s
 kubectl -n lvmo-demo exec writer -- sh -c 'echo "hello from lvmo" > /data/message; sync'
 kubectl -n lvmo-demo exec writer -- cat /data/message
@@ -411,6 +451,7 @@ spec:
     persistentVolumeClaim:
       claimName: restored
 YAML
+allow_forwarded_nfs restored
 kubectl -n lvmo-demo wait --for=condition=Ready pod/reader --timeout=180s
 kubectl -n lvmo-demo exec reader -- cat /data/message
 kubectl -n lvmo-demo exec writer -- cat /data/message
