@@ -23,7 +23,7 @@ func TestFailedCreateRecovery(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	defer conn.Close()
+	t.Cleanup(func() { _ = conn.Close() })
 	controller := csi.NewControllerClient(conn)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()

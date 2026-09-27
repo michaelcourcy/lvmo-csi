@@ -29,7 +29,7 @@ for suite in sanity integration; do
  CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go test -c -o "bin/$suite.test" "./tests/$suite"
 done
 created=true
-limactl start --name="$vm" --cpus=4 --memory=6 --disk=40 --mount-none --tty=false template:docker
+limactl start --name="$vm" --cpus=4 --memory=6 --disk=40 --mount-none --tty=false template:docker-rootful
 archive=$(mktemp -t lvmo-src).tgz
 tar --exclude=.git --exclude=.test --exclude=dist -czf "$archive" .
 limactl copy "$archive" "$vm:/tmp/lvmo-src.tgz"
