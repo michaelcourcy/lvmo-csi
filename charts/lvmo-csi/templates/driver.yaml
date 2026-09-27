@@ -1,0 +1,217 @@
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: lvmo.csi.io
+spec:
+  attachRequired: false
+  podInfoOnMount: true
+  fsGroupPolicy: File
+  volumeLifecycleModes: [Persistent]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lvmo-csi
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: lvmo-csi
+rules:
+- apiGroups: [""]
+  resources: [persistentvolumes]
+  verbs: [get, list, watch, create, delete, patch, update]
+- apiGroups: [""]
+  resources: [persistentvolumeclaims, persistentvolumeclaims/status]
+  verbs: [get, list, watch, update, patch]
+- apiGroups: [""]
+  resources: [nodes, pods]
+  verbs: [get, list, watch]
+- apiGroups: [""]
+  resources: [events]
+  verbs: [get, list, watch, create, patch, update]
+- apiGroups: [storage.k8s.io]
+  resources: [storageclasses, csinodes, volumeattachments, volumeattributesclasses]
+  verbs: [get, list, watch]
+- apiGroups: [snapshot.storage.k8s.io]
+  resources: [volumesnapshots, volumesnapshotclasses, volumesnapshotcontents]
+  verbs: [get, list, watch, create, update, patch, delete]
+- apiGroups: [snapshot.storage.k8s.io]
+  resources: [volumesnapshotcontents/status]
+  verbs: [update, patch]
+- apiGroups: [coordination.k8s.io]
+  resources: [leases]
+  verbs: [get, list, watch, create, update, delete]
+{{- if .Values.metadata.enabled }}
+- apiGroups: [cbt.storage.k8s.io]
+  resources: [snapshotmetadataservices]
+  verbs: [get, list, watch]
+- apiGroups: [authentication.k8s.io]
+  resources: [tokenreviews]
+  verbs: [create]
+- apiGroups: [authorization.k8s.io]
+  resources: [subjectaccessreviews]
+  verbs: [create]
+- apiGroups: [""]
+  resources: [secrets]
+  verbs: [get]
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: lvmo-csi
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: lvmo-csi
+subjects:
+- kind: ServiceAccount
+  name: lvmo-csi
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lvmo-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: lvmo-controller}
+  template:
+    metadata:
+      labels: {app: lvmo-controller}
+    spec:
+      serviceAccountName: lvmo-csi
+      containers:
+      - name: driver
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        args: ["--endpoint=unix:///csi/csi.sock", "--api-endpoint={{ required "apiEndpoint is required" .Values.apiEndpoint }}"]
+        volumeMounts:
+        - {name: socket, mountPath: /csi}
+      {{- range $name, $image := dict "provisioner" .Values.sidecars.provisioner "snapshotter" .Values.sidecars.snapshotter "resizer" .Values.sidecars.resizer }}
+      - name: {{ $name }}
+        image: {{ $image }}
+        args: ["--csi-address=/csi/csi.sock", "--leader-election=true", "--timeout=120s"]
+        volumeMounts:
+        - {name: socket, mountPath: /csi}
+      {{- end }}
+      {{- if .Values.metadata.enabled }}
+      - name: snapshot-metadata
+        image: {{ .Values.metadata.image }}
+        args:
+        - --csi-address=/csi/csi.sock
+        - --port=6443
+        - --tls-cert=/tls/tls.crt
+        - --tls-key=/tls/tls.key
+        - --audience={{ .Values.metadata.audience }}
+        ports:
+        - {name: metadata, containerPort: 6443}
+        volumeMounts:
+        - {name: socket, mountPath: /csi}
+        - {name: tls, mountPath: /tls, readOnly: true}
+      {{- end }}
+      volumes:
+      - name: socket
+        emptyDir: {}
+      {{- if .Values.metadata.enabled }}
+      - name: tls
+        secret:
+          secretName: {{ .Values.metadata.tlsSecret }}
+      {{- end }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: lvmo-node
+spec:
+  selector:
+    matchLabels: {app: lvmo-node}
+  template:
+    metadata:
+      labels: {app: lvmo-node}
+    spec:
+      serviceAccountName: lvmo-csi
+      hostNetwork: true
+      hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations:
+      - operator: Exists
+      containers:
+      - name: driver
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        securityContext: {privileged: true}
+        args: ["--endpoint=unix:///csi/csi.sock", "--api-endpoint={{ .Values.apiEndpoint }}", "--node-id=$(NODE_NAME)"]
+        env:
+        {{- if .Values.iscsiHostProc }}
+        - {name: LVMO_ISCSI_HOST_PROC, value: /host-proc}
+        {{- end }}
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef: {fieldPath: spec.nodeName}
+        volumeMounts:
+        - {name: socket, mountPath: /csi}
+        - {name: kubelet, mountPath: "{{ .Values.kubeletRoot }}", mountPropagation: Bidirectional}
+        - {name: dev, mountPath: /dev}
+        - {name: sys, mountPath: /sys}
+        - {name: iscsi, mountPath: /etc/iscsi}
+        - {name: iscsi-state, mountPath: /var/lib/iscsi}
+        - {name: iscsi-run, mountPath: /run/iscsid}
+        - {name: state, mountPath: /var/lib/lvmo-node}
+        {{- if .Values.iscsiHostProc }}
+        - {name: host-proc, mountPath: /host-proc}
+        {{- end }}
+      - name: registrar
+        image: {{ .Values.sidecars.registrar }}
+        args: ["--csi-address=/csi/csi.sock", "--kubelet-registration-path={{ .Values.kubeletRoot }}/plugins/lvmo.csi.io/csi.sock"]
+        volumeMounts:
+        - {name: socket, mountPath: /csi}
+        - {name: registration, mountPath: /registration}
+      volumes:
+      - name: socket
+        hostPath: {path: "{{ .Values.kubeletRoot }}/plugins/lvmo.csi.io", type: DirectoryOrCreate}
+      - name: registration
+        hostPath: {path: "{{ .Values.kubeletRoot }}/plugins_registry", type: DirectoryOrCreate}
+      - name: kubelet
+        hostPath: {path: "{{ .Values.kubeletRoot }}", type: Directory}
+      - name: dev
+        hostPath: {path: /dev, type: Directory}
+      - name: sys
+        hostPath: {path: /sys, type: Directory}
+      - name: iscsi
+        hostPath: {path: /etc/iscsi, type: DirectoryOrCreate}
+      - name: iscsi-state
+        hostPath: {path: /var/lib/iscsi, type: DirectoryOrCreate}
+      - name: iscsi-run
+        hostPath: {path: /run/iscsid, type: DirectoryOrCreate}
+      {{- if .Values.iscsiHostProc }}
+      - name: host-proc
+        hostPath: {path: {{ .Values.iscsiHostProc | quote }}, type: Directory}
+      {{- end }}
+      - name: state
+        hostPath: {path: /var/lib/lvmo-node, type: DirectoryOrCreate}
+{{- if .Values.openshift }}
+---
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: lvmo-csi
+allowPrivilegedContainer: true
+allowHostDirVolumePlugin: true
+allowHostNetwork: true
+allowHostPID: true
+allowHostPorts: true
+allowHostIPC: false
+allowPrivilegeEscalation: true
+allowedCapabilities: ['*']
+runAsUser: {type: RunAsAny}
+seLinuxContext: {type: RunAsAny}
+fsGroup: {type: RunAsAny}
+supplementalGroups: {type: RunAsAny}
+volumes: ['*']
+users:
+- system:serviceaccount:{{ .Release.Namespace }}:lvmo-csi
+{{- end }}

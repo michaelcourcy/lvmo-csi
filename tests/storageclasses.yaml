@@ -1,0 +1,30 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: lvmo-nfs
+provisioner: lvmo.csi.io
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+parameters:
+  protocol: nfs
+  vg: lvmo-test1
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: lvmo-iscsi
+provisioner: lvmo.csi.io
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+parameters:
+  protocol: iscsi
+  vg: lvmo-test1
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: lvmo-snapshots
+  annotations:
+    k10.kasten.io/is-snapshot-class: "true"
+driver: lvmo.csi.io
+deletionPolicy: Delete

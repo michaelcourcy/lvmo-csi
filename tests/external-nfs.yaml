@@ -1,0 +1,19 @@
+StorageClass:
+  FromExistingClassName: lvmo-nfs
+SnapshotClass:
+  FromExistingClassName: lvmo-snapshots
+DriverInfo:
+  Name: lvmo.csi.io
+  SupportedSizeRange:
+    Min: 1Gi
+    Max: 2Gi
+  Capabilities:
+    persistence: true
+    fsGroup: true
+    exec: true
+    multipods: true
+    RWX: true
+    controllerExpansion: true
+    nodeExpansion: false
+    snapshotDataSource: true
+    pvcDataSource: true

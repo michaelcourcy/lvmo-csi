@@ -1,0 +1,703 @@
+// Package backend manages exclusively lvmo-owned thin LVs and their exports.
+package backend
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	pb "github.com/michaelcourcy/lvmo-csi/api/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+)
+
+type Runner interface {
+	Run(context.Context, string, ...string) ([]byte, error)
+}
+type Exec struct{}
+
+func (Exec) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(out)))
+	}
+	return out, nil
+}
+
+type Config struct {
+	Root, Server, Pool, Clients string
+	VGs                         []string
+}
+type state struct {
+	SnapshotOrder     map[string]uint64       `json:"snapshot_order,omitempty"`
+	NextSnapshotOrder uint64                  `json:"next_snapshot_order,omitempty"`
+	Deleting          map[string]bool         `json:"deleting,omitempty"`
+	Volumes           map[string]*pb.Volume   `json:"volumes"`
+	Snapshots         map[string]*pb.Snapshot `json:"snapshots"`
+}
+type Backend struct {
+	pb.UnimplementedStorageServer
+	mu    sync.Mutex
+	cfg   Config
+	run   Runner
+	state state
+}
+
+var validName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.+-]{0,100}$`)
+
+func New(cfg Config, run Runner) (*Backend, error) {
+	if cfg.Root == "" || !filepath.IsAbs(cfg.Root) || strings.ContainsAny(cfg.Root, " \n\t") {
+		return nil, fmt.Errorf("root must be an absolute path without whitespace")
+	}
+	if cfg.Server == "" || strings.ContainsAny(cfg.Server, "/ \n\t") {
+		return nil, fmt.Errorf("server address required")
+	}
+	if cfg.Pool == "" {
+		cfg.Pool = "lvmo-pool"
+	}
+	if !validName.MatchString(cfg.Pool) {
+		return nil, fmt.Errorf("invalid pool name")
+	}
+	if len(cfg.VGs) == 0 {
+		return nil, fmt.Errorf("at least one VG required")
+	}
+	for _, vg := range cfg.VGs {
+		if !validName.MatchString(vg) {
+			return nil, fmt.Errorf("invalid VG")
+		}
+	}
+	if cfg.Clients == "" {
+		cfg.Clients = "*"
+	}
+	if strings.ContainsAny(cfg.Clients, " \n\t()") {
+		return nil, fmt.Errorf("invalid NFS client selector")
+	}
+	b := &Backend{cfg: cfg, run: run, state: state{Volumes: map[string]*pb.Volume{}, Snapshots: map[string]*pb.Snapshot{}}}
+	if err := os.MkdirAll(cfg.Root, 0700); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(cfg.Root, "state.json"))
+	if err == nil {
+		err = json.Unmarshal(data, &b.state)
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	if b.state.SnapshotOrder == nil {
+		b.state.SnapshotOrder = map[string]uint64{}
+	}
+	if b.state.Deleting == nil {
+		b.state.Deleting = map[string]bool{}
+	}
+	return b, nil
+}
+func (b *Backend) save() error {
+	data, err := json.MarshalIndent(b.state, "", "  ")
+	if err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(b.cfg.Root, ".state-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if err = f.Chmod(0600); err == nil {
+		_, err = f.Write(data)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	ce := f.Close()
+	if err == nil {
+		err = ce
+	}
+	if err != nil {
+		return err
+	}
+	if err = os.Rename(f.Name(), filepath.Join(b.cfg.Root, "state.json")); err != nil {
+		return err
+	}
+	d, err := os.Open(b.cfg.Root)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+func ID(prefix, name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return prefix + hex.EncodeToString(sum[:16])
+}
+func (b *Backend) vg(v string) (string, error) {
+	if v == "" && len(b.cfg.VGs) == 1 {
+		v = b.cfg.VGs[0]
+	}
+	for _, x := range b.cfg.VGs {
+		if x == v {
+			return v, nil
+		}
+	}
+	return "", status.Error(codes.InvalidArgument, "select a configured VG")
+}
+func device(vg, id string) string { return "/dev/" + vg + "/" + id }
+func internal(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return status.FromContextError(err).Err()
+	}
+	if status.Code(err) != codes.Unknown {
+		return err
+	}
+	return status.Error(codes.Internal, err.Error())
+}
+func (b *Backend) cmd(ctx context.Context, name string, args ...string) error {
+	_, err := b.run.Run(ctx, name, args...)
+	return err
+}
+func round(n int64) int64 {
+	const extent = 4 * 1024 * 1024
+	if n < extent {
+		return extent
+	}
+	return (n + extent - 1) / extent * extent
+}
+func (b *Backend) CreateVolume(ctx context.Context, r *pb.CreateVolumeRequest) (*pb.Volume, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if r.Name == "" || r.Bytes < 0 || r.Bytes > 1<<60 {
+		return nil, status.Error(codes.InvalidArgument, "name and valid capacity required")
+	}
+	vg, err := b.vg(r.Vg)
+	if err != nil {
+		return nil, err
+	}
+	if r.Protocol != "nfs" && r.Protocol != "iscsi" {
+		return nil, status.Error(codes.InvalidArgument, "protocol must be nfs or iscsi")
+	}
+	if r.Block && r.Protocol == "nfs" {
+		return nil, status.Error(codes.InvalidArgument, "NFS does not support block access")
+	}
+	fs := r.Filesystem
+	if fs == "" && !r.Block {
+		fs = "ext4"
+	}
+	if fs != "" && fs != "ext4" && fs != "xfs" {
+		return nil, status.Error(codes.InvalidArgument, "filesystem must be ext4 or xfs")
+	}
+	if r.SourceSnapshot != "" && r.SourceVolume != "" {
+		return nil, status.Error(codes.InvalidArgument, "only one source allowed")
+	}
+	var src, lineage string
+	size := round(r.Bytes)
+	if r.SourceSnapshot != "" {
+		s := b.state.Snapshots[r.SourceSnapshot]
+		if s == nil || !s.Ready {
+			return nil, status.Error(codes.NotFound, "snapshot not found")
+		}
+		if s.Vg != vg {
+			return nil, status.Error(codes.InvalidArgument, "clone must use source VG")
+		}
+		src = s.Id
+		lineage = s.Lineage
+		fs = s.Filesystem
+		if size < s.Bytes {
+			return nil, status.Error(codes.OutOfRange, "clone smaller than source")
+		}
+	}
+	if r.SourceVolume != "" {
+		v := b.state.Volumes[r.SourceVolume]
+		if v == nil || !v.Ready || b.state.Deleting[v.Id] {
+			return nil, status.Error(codes.NotFound, "source not found")
+		}
+		if v.Vg != vg {
+			return nil, status.Error(codes.InvalidArgument, "clone must use source VG")
+		}
+		src = v.Id
+		fs = v.Filesystem
+		if size < v.Bytes {
+			return nil, status.Error(codes.OutOfRange, "clone smaller than source")
+		}
+	}
+	if !r.Block && fs == "" {
+		return nil, status.Error(codes.InvalidArgument, "cannot mount unformatted source")
+	}
+	id := ID("v-", r.Name)
+	if b.state.Deleting[id] {
+		return nil, status.Error(codes.Aborted, "previous volume deletion is reclaiming storage; retry")
+	}
+	if v := b.state.Volumes[id]; v != nil {
+		if v.Bytes < size || v.Protocol != r.Protocol || v.Vg != vg || v.Block != r.Block || v.SourceSnapshot != r.SourceSnapshot || v.SourceVolume != r.SourceVolume {
+			return nil, status.Error(codes.AlreadyExists, "incompatible existing volume")
+		}
+		if !v.Ready {
+			return nil, status.Error(codes.Aborted, "incomplete volume requires reconciliation")
+		}
+		return proto.Clone(v).(*pb.Volume), nil
+	}
+	if lineage == "" {
+		lineage = id
+	}
+	v := &pb.Volume{Id: id, Name: r.Name, Bytes: size, Vg: vg, Protocol: r.Protocol, Filesystem: fs, Server: b.cfg.Server, Path: filepath.Join(b.cfg.Root, "volumes", id), Iqn: "iqn.2026-09.io.lvmo:" + id, Lineage: lineage, Block: r.Block, SourceSnapshot: r.SourceSnapshot, SourceVolume: r.SourceVolume}
+	b.state.Volumes[id] = v
+	if err = b.save(); err != nil {
+		delete(b.state.Volumes, id)
+		return nil, internal(err)
+	}
+	if src == "" {
+		err = b.cmd(ctx, "lvcreate", "--yes", "--type", "thin", "--virtualsize", fmt.Sprintf("%dB", size), "--thinpool", vg+"/"+b.cfg.Pool, "--name", id, "--addtag", "lvmo")
+	} else {
+		err = b.cloneLV(ctx, vg, src, id)
+	}
+	if err != nil {
+		return nil, internal(err)
+	}
+	if src != "" {
+		if err = b.cmd(ctx, "lvextend", "--size", fmt.Sprintf("%dB", size), device(vg, id)); err != nil { // LVM returns failure for unchanged size; verify below.
+			actual, e := b.lvSize(ctx, vg, id)
+			if e != nil || actual != size {
+				return nil, internal(err)
+			}
+		}
+	}
+	if src == "" && fs != "" {
+		if fs == "ext4" {
+			err = b.cmd(ctx, "mkfs.ext4", "-F", device(vg, id))
+		} else {
+			err = b.cmd(ctx, "mkfs.xfs", "-f", device(vg, id))
+		}
+		if err != nil {
+			return nil, internal(err)
+		}
+	}
+	if err = b.publish(ctx, v); err != nil {
+		return nil, internal(err)
+	}
+	if src != "" && v.Protocol == "nfs" {
+		if fs == "xfs" {
+			err = b.cmd(ctx, "xfs_growfs", v.Path)
+		} else {
+			err = b.cmd(ctx, "resize2fs", device(vg, id))
+		}
+		if err != nil {
+			return nil, internal(err)
+		}
+	}
+	v.Ready = true
+	return proto.Clone(v).(*pb.Volume), internal(b.save())
+}
+func (b *Backend) lvSize(ctx context.Context, vg, id string) (int64, error) {
+	out, e := b.run.Run(ctx, "lvs", "--noheadings", "--units", "b", "--nosuffix", "-o", "lv_size", device(vg, id))
+	if e != nil {
+		return 0, e
+	}
+	f, e := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	return int64(f), e
+}
+func (b *Backend) cloneLV(ctx context.Context, vg, src, id string) error {
+	var path string
+	if v := b.state.Volumes[src]; v != nil && v.Protocol == "nfs" {
+		path = v.Path
+	}
+	if path != "" {
+		if err := b.cmd(ctx, "sync", "-f", path); err != nil {
+			return err
+		}
+	}
+	if err := b.cmd(ctx, "lvcreate", "--yes", "--snapshot", "--name", id, "--addtag", "lvmo", device(vg, src)); err != nil {
+		return err
+	}
+	if err := b.cmd(ctx, "lvchange", "--activate", "y", "--ignoreactivationskip", device(vg, id)); err != nil {
+		return err
+	}
+	attr, err := b.run.Run(ctx, "lvs", "--noheadings", "-o", "lv_attr", device(vg, id))
+	if err != nil {
+		return err
+	}
+	if strings.HasPrefix(strings.TrimSpace(string(attr)), "Vr") {
+		return b.cmd(ctx, "lvchange", "--permission", "rw", device(vg, id))
+	}
+	return nil
+}
+func (b *Backend) publish(ctx context.Context, v *pb.Volume) error {
+	if v.Protocol == "nfs" {
+		if err := os.MkdirAll(v.Path, 0755); err != nil {
+			return err
+		}
+		if err := b.cmd(ctx, "mountpoint", "-q", v.Path); err != nil {
+			opts := "defaults"
+			if v.Filesystem == "xfs" {
+				opts = "nouuid"
+			}
+			if err = b.cmd(ctx, "mount", "-t", v.Filesystem, "-o", opts, device(v.Vg, v.Id), v.Path); err != nil {
+				return err
+			}
+		}
+		if err := os.Chmod(v.Path, 0777); err != nil {
+			return err
+		}
+		if err := os.MkdirAll("/etc/exports.d", 0755); err != nil {
+			return err
+		}
+		line := fmt.Sprintf("%s %s(rw,sync,no_subtree_check,no_root_squash,fsid=%s)\n", v.Path, b.cfg.Clients, v.Id[2:10])
+		// fsid is numeric, not a hexadecimal token.
+		n, _ := strconv.ParseUint(v.Id[2:10], 16, 32)
+		line = fmt.Sprintf("%s %s(rw,sync,no_subtree_check,no_root_squash,fsid=%d)\n", v.Path, b.cfg.Clients, n)
+		if err := os.WriteFile("/etc/exports.d/lvmo-"+v.Id+".exports", []byte(line), 0644); err != nil {
+			return err
+		}
+		return b.cmd(ctx, "exportfs", "-ra")
+	}
+	// targetcli operations are idempotent after checking the JSON configuration.
+	if err := b.cmd(ctx, "targetcli", "/backstores/block/"+v.Id, "ls"); err != nil {
+		if err = b.cmd(ctx, "targetcli", "/backstores/block", "create", v.Id, device(v.Vg, v.Id)); err != nil {
+			return err
+		}
+	}
+	if err := b.cmd(ctx, "targetcli", "/backstores/block/"+v.Id, "set", "attribute", "emulate_tpu=1", "emulate_tpws=1"); err != nil {
+		return err
+	}
+	target := "/iscsi/" + v.Iqn
+	if err := b.cmd(ctx, "targetcli", target, "ls"); err != nil {
+		if err = b.cmd(ctx, "targetcli", "/iscsi", "create", v.Iqn); err != nil {
+			return err
+		}
+	}
+	if b.cmd(ctx, "targetcli", target+"/tpg1/luns/lun0", "ls") != nil {
+		if err := b.cmd(ctx, "targetcli", target+"/tpg1/luns", "create", "/backstores/block/"+v.Id); err != nil {
+			return err
+		}
+	}
+	if err := b.cmd(ctx, "targetcli", target+"/tpg1", "set", "attribute", "authentication=0", "generate_node_acls=1", "demo_mode_write_protect=0", "cache_dynamic_acls=1"); err != nil {
+		return err
+	}
+	return b.cmd(ctx, "targetcli", "saveconfig")
+}
+func (b *Backend) GetVolume(ctx context.Context, r *pb.ID) (*pb.Volume, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	v := b.state.Volumes[r.Id]
+	if v == nil || !v.Ready || b.state.Deleting[r.Id] {
+		return nil, status.Error(codes.NotFound, "volume not found")
+	}
+	return proto.Clone(v).(*pb.Volume), nil
+}
+func (b *Backend) ListVolumes(context.Context, *pb.Empty) (*pb.Volumes, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := &pb.Volumes{}
+	for _, v := range b.state.Volumes {
+		if v.Ready && !b.state.Deleting[v.Id] {
+			out.Volumes = append(out.Volumes, proto.Clone(v).(*pb.Volume))
+		}
+	}
+	sort.Slice(out.Volumes, func(i, j int) bool { return out.Volumes[i].Id < out.Volumes[j].Id })
+	return out, nil
+}
+func (b *Backend) DeleteVolume(ctx context.Context, r *pb.ID) (*pb.Empty, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if r.Id == "" {
+		return nil, status.Error(codes.InvalidArgument, "id required")
+	}
+	v := b.state.Volumes[r.Id]
+	if v == nil {
+		return &pb.Empty{}, nil
+	}
+	b.state.Deleting[r.Id] = true
+	if err := b.save(); err != nil {
+		return nil, internal(err)
+	}
+	if v.Protocol == "nfs" {
+		// Removing the exports file plus exportfs -ra is idempotent.
+
+		if err := os.Remove("/etc/exports.d/lvmo-" + v.Id + ".exports"); err != nil && !os.IsNotExist(err) {
+			return nil, internal(err)
+		}
+		if err := b.cmd(ctx, "exportfs", "-ra"); err != nil {
+			return nil, internal(err)
+		}
+		if err := b.cmd(ctx, "exportfs", "-f"); err != nil {
+			return nil, internal(err)
+		}
+		// Flush entries created in the current second as well.
+		for _, cache := range []string{"nfsd.export", "nfsd.fh"} {
+			if err := os.WriteFile("/proc/net/rpc/"+cache+"/flush", []byte(strconv.FormatInt(time.Now().Unix()+1, 10)+"\n"), 0600); err != nil {
+				return nil, internal(err)
+			}
+		}
+		if b.cmd(ctx, "mountpoint", "-q", v.Path) == nil {
+			var err error
+			for attempt := 0; attempt < 5; attempt++ {
+				err = b.cmd(ctx, "umount", v.Path)
+				if err == nil {
+					break
+				}
+				select {
+				case <-ctx.Done():
+					return nil, status.FromContextError(ctx.Err()).Err()
+				case <-time.After(200 * time.Millisecond):
+				}
+			}
+			if err != nil {
+				if strings.Contains(err.Error(), "busy") {
+					return &pb.Empty{}, nil
+				}
+				return nil, internal(err)
+			}
+		}
+		os.Remove(v.Path)
+	} else {
+		if b.cmd(ctx, "targetcli", "/iscsi/"+v.Iqn, "ls") == nil {
+			if err := b.cmd(ctx, "targetcli", "/iscsi", "delete", v.Iqn); err != nil {
+				return nil, internal(err)
+			}
+		}
+		if b.cmd(ctx, "targetcli", "/backstores/block/"+v.Id, "ls") == nil {
+			if err := b.cmd(ctx, "targetcli", "/backstores/block", "delete", v.Id); err != nil {
+				return nil, internal(err)
+			}
+		}
+		if err := b.cmd(ctx, "targetcli", "saveconfig"); err != nil {
+			return nil, internal(err)
+		}
+	}
+	if b.cmd(ctx, "lvs", device(v.Vg, v.Id)) == nil {
+		if err := b.cmd(ctx, "lvremove", "--yes", device(v.Vg, v.Id)); err != nil {
+			return nil, internal(err)
+		}
+	}
+	delete(b.state.Volumes, r.Id)
+	delete(b.state.Deleting, r.Id)
+	return &pb.Empty{}, internal(b.save())
+}
+func (b *Backend) ExpandVolume(ctx context.Context, r *pb.ExpandRequest) (*pb.Volume, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	v := b.state.Volumes[r.Id]
+	if v == nil || !v.Ready || b.state.Deleting[r.Id] {
+		return nil, status.Error(codes.NotFound, "volume not found")
+	}
+	if r.Bytes <= 0 || r.Bytes > 1<<60 {
+		return nil, status.Error(codes.InvalidArgument, "invalid capacity")
+	}
+	size := round(r.Bytes)
+	if size <= v.Bytes {
+		return proto.Clone(v).(*pb.Volume), nil
+	}
+	if err := b.cmd(ctx, "lvextend", "--size", fmt.Sprintf("%dB", size), device(v.Vg, v.Id)); err != nil {
+		actual, e := b.lvSize(ctx, v.Vg, v.Id)
+		if e != nil || actual != size {
+			return nil, internal(err)
+		}
+	}
+	if v.Protocol == "nfs" {
+		var err error
+		if v.Filesystem == "xfs" {
+			err = b.cmd(ctx, "xfs_growfs", v.Path)
+		} else {
+			err = b.cmd(ctx, "resize2fs", device(v.Vg, v.Id))
+		}
+		if err != nil {
+			return nil, internal(err)
+		}
+	}
+	v.Bytes = size
+	return proto.Clone(v).(*pb.Volume), internal(b.save())
+}
+func (b *Backend) CreateSnapshot(ctx context.Context, r *pb.SnapshotRequest) (*pb.Snapshot, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if r.Name == "" || r.VolumeId == "" {
+		return nil, status.Error(codes.InvalidArgument, "name and source required")
+	}
+	id := ID("s-", r.Name)
+	if s := b.state.Snapshots[id]; s != nil {
+		if s.VolumeId != r.VolumeId {
+			return nil, status.Error(codes.AlreadyExists, "different source")
+		}
+		if !s.Ready {
+			return nil, status.Error(codes.Aborted, "incomplete snapshot")
+		}
+		return proto.Clone(s).(*pb.Snapshot), nil
+	}
+	v := b.state.Volumes[r.VolumeId]
+	if v == nil || !v.Ready || b.state.Deleting[v.Id] {
+		return nil, status.Error(codes.NotFound, "source not found")
+	}
+	s := &pb.Snapshot{Id: id, Name: r.Name, VolumeId: v.Id, Vg: v.Vg, Bytes: v.Bytes, CreatedUnix: time.Now().Unix(), Filesystem: v.Filesystem, Lineage: v.Lineage}
+	b.state.NextSnapshotOrder++
+	b.state.SnapshotOrder[id] = b.state.NextSnapshotOrder
+	b.state.Snapshots[id] = s
+	if err := b.save(); err != nil {
+		return nil, internal(err)
+	}
+	if err := b.cloneLV(ctx, v.Vg, v.Id, id); err != nil {
+		return nil, internal(err)
+	}
+	if err := b.cmd(ctx, "lvchange", "--permission", "r", device(s.Vg, s.Id)); err != nil {
+		return nil, internal(err)
+	}
+	s.Ready = true
+	return proto.Clone(s).(*pb.Snapshot), internal(b.save())
+}
+func (b *Backend) DeleteSnapshot(ctx context.Context, r *pb.ID) (*pb.Empty, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if r.Id == "" {
+		return nil, status.Error(codes.InvalidArgument, "id required")
+	}
+	s := b.state.Snapshots[r.Id]
+	if s == nil {
+		return &pb.Empty{}, nil
+	}
+	if b.cmd(ctx, "lvs", device(s.Vg, s.Id)) == nil {
+		if err := b.cmd(ctx, "lvremove", "--yes", device(s.Vg, s.Id)); err != nil {
+			return nil, internal(err)
+		}
+	}
+	delete(b.state.Snapshots, r.Id)
+	delete(b.state.SnapshotOrder, r.Id)
+	return &pb.Empty{}, internal(b.save())
+}
+func (b *Backend) ListSnapshots(context.Context, *pb.Empty) (*pb.Snapshots, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := &pb.Snapshots{}
+	for _, s := range b.state.Snapshots {
+		if s.Ready {
+			out.Snapshots = append(out.Snapshots, proto.Clone(s).(*pb.Snapshot))
+		}
+	}
+	sort.Slice(out.Snapshots, func(i, j int) bool { return out.Snapshots[i].Id < out.Snapshots[j].Id })
+	return out, nil
+}
+func (b *Backend) GetCapacity(ctx context.Context, r *pb.CapacityRequest) (*pb.Capacity, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if r.Vg == "" {
+		var total int64
+		for _, vg := range b.cfg.VGs {
+			c, e := b.poolCapacity(ctx, vg)
+			if e != nil {
+				return nil, e
+			}
+			total += c.AvailableBytes
+		}
+		return &pb.Capacity{AvailableBytes: total}, nil
+	}
+	vg, e := b.vg(r.Vg)
+	if e != nil {
+		return nil, e
+	}
+	return b.poolCapacity(ctx, vg)
+}
+func (b *Backend) poolCapacity(ctx context.Context, vg string) (*pb.Capacity, error) {
+	out, e := b.run.Run(ctx, "lvs", "--noheadings", "--units", "b", "--nosuffix", "--separator", ",", "-o", "lv_size,data_percent", vg+"/"+b.cfg.Pool)
+	if e != nil {
+		return nil, internal(e)
+	}
+	fields := strings.Split(strings.TrimSpace(string(out)), ",")
+	if len(fields) != 2 {
+		return nil, status.Error(codes.Internal, "invalid capacity report")
+	}
+	size, e := strconv.ParseFloat(strings.TrimSpace(fields[0]), 64)
+	if e != nil {
+		return nil, internal(e)
+	}
+	used, e := strconv.ParseFloat(strings.TrimSpace(fields[1]), 64)
+	if e != nil {
+		return nil, internal(e)
+	}
+	return &pb.Capacity{AvailableBytes: int64(size * (100 - used) / 100)}, nil
+}
+
+// Reconcile restores exports after restart. Incomplete objects remain deletable and
+// are never silently formatted or advertised as ready.
+func (b *Backend) Reconcile(ctx context.Context) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, vg := range b.cfg.VGs {
+		out, e := b.run.Run(ctx, "lvs", "--noheadings", "-o", "segtype", vg+"/"+b.cfg.Pool)
+		if e != nil {
+			return e
+		}
+		if strings.TrimSpace(string(out)) != "thin-pool" {
+			return fmt.Errorf("%s/%s must be a pre-created thin pool", vg, b.cfg.Pool)
+		}
+	}
+	for _, v := range b.state.Volumes {
+		if !v.Ready {
+			b.state.Deleting[v.Id] = true
+		}
+		if v.Ready && !b.state.Deleting[v.Id] {
+			if e := b.publish(ctx, v); e != nil {
+				return e
+			}
+		}
+	}
+	return b.save()
+}
+
+// Reap retries physical reclamation after NFS kernel references expire. The
+// durable tombstone prevents deleted exports from being resurrected on restart.
+func (b *Backend) Reap(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			b.mu.Lock()
+			ids := []string{}
+			snapshots := []string{}
+			for id, v := range b.state.Volumes {
+				if !v.Ready {
+					b.state.Deleting[id] = true
+				}
+			}
+			for id, s := range b.state.Snapshots {
+				if !s.Ready {
+					snapshots = append(snapshots, id)
+				}
+			}
+			for id := range b.state.Deleting {
+				ids = append(ids, id)
+			}
+			b.mu.Unlock()
+			for _, id := range ids {
+				c, cancel := context.WithTimeout(ctx, 10*time.Second)
+				if _, err := b.DeleteVolume(c, &pb.ID{Id: id}); err != nil {
+					log.Printf("reclaim volume %s: %v", id, err)
+				}
+				cancel()
+			}
+			for _, id := range snapshots {
+				c, cancel := context.WithTimeout(ctx, 10*time.Second)
+				if _, err := b.DeleteSnapshot(c, &pb.ID{Id: id}); err != nil {
+					log.Printf("reclaim incomplete snapshot %s: %v", id, err)
+				}
+				cancel()
+			}
+		}
+	}
+}

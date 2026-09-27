@@ -1,0 +1,21 @@
+image:
+  repository: michaelcourcy/lvmo-csi
+  tag: dev
+  pullPolicy: IfNotPresent
+apiEndpoint: ""
+kubeletRoot: /var/lib/kubelet
+openshift: false
+metadata:
+  enabled: false
+  image: registry.k8s.io/sig-storage/csi-snapshot-metadata:v1.0.0
+  tlsSecret: lvmo-metadata-tls
+  audience: lvmo.csi.io
+  caCert: ""
+sidecars:
+  provisioner: registry.k8s.io/sig-storage/csi-provisioner:v6.0.0
+  snapshotter: registry.k8s.io/sig-storage/csi-snapshotter:v8.5.0
+  resizer: registry.k8s.io/sig-storage/csi-resizer:v2.0.0
+  registrar: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.15.0
+
+# Only for nested Kind tests; leave empty on real Kubernetes nodes.
+iscsiHostProc: ""
