@@ -2,7 +2,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
-for tool in az kubectl helm ssh scp go jq; do command -v "$tool" >/dev/null; done
+for tool in az kubectl oc helm ssh scp go jq; do command -v "$tool" >/dev/null; done
 context=$(kubectl config current-context)
 export KUBE_CONTEXT="$context" OPENSHIFT=true
 (( $# )) || set -- sanity external snapshots metadata
@@ -60,7 +60,25 @@ ssh "${sshargs[@]}" "lvmo@$ip" 'mkdir -p /tmp/lvmo-src && tar -xzf /tmp/lvmo-src
 ssh "${sshargs[@]}" "lvmo@$ip" "sudo env STORAGE_SERVER='$private' RELEASE_VERSION='${RELEASE_VERSION:-}' bash /tmp/lvmo-src/scripts/setup-vm.sh"
 kubectl --context "$context" create namespace lvmo-system
 installed=true
-helm upgrade --install lvmo "$root/charts/lvmo-csi" --kube-context "$context" -n lvmo-system --set apiEndpoint="$private:50051" --set openshift=true --set image.tag="${RELEASE_VERSION:-v0.1.0-alpha.1}" --wait --timeout 5m
+if [[ -z ${RELEASE_VERSION:-} ]]; then
+ mkdir -p "$work/image"
+ cp bin/lvmo-driver bin/lvmo-metadata "$work/image/"
+ cat > "$work/image/Dockerfile" <<'DOCKER'
+FROM ubuntu:24.04
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nfs-common open-iscsi util-linux e2fsprogs xfsprogs ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY lvmo-driver lvmo-metadata /usr/local/bin/
+ENTRYPOINT ["/usr/local/bin/lvmo-driver"]
+DOCKER
+ oc --context "$context" -n lvmo-system new-build --name=lvmo-csi --binary --strategy=docker
+ oc --context "$context" -n lvmo-system start-build lvmo-csi --from-dir="$work/image" --follow --wait
+ image_repository=image-registry.openshift-image-registry.svc:5000/lvmo-system/lvmo-csi
+ image_tag=latest
+else
+ image_repository=michaelcourcy/lvmo-csi
+ image_tag=$RELEASE_VERSION
+fi
+export TEST_IMAGE="$image_repository:$image_tag"
+helm upgrade --install lvmo "$root/charts/lvmo-csi" --kube-context "$context" -n lvmo-system --set apiEndpoint="$private:50051" --set openshift=true --set image.repository="$image_repository" --set image.tag="$image_tag" --wait --timeout 5m
 kubectl --context "$context" apply -f "$root/tests/storageclasses.yaml"
 export API_ENDPOINT="$private:50051"
 for suite in "$@"; do
@@ -71,6 +89,6 @@ for suite in "$@"; do
  metadata)
   ssh "${sshargs[@]}" "lvmo@$ip" 'sudo env CSI_ENDPOINT=unix:///tmp/lvmo-csi.sock /tmp/lvmo-src/bin/integration.test -test.v -test.timeout=15m'
   bash "$root/scripts/enable-metadata.sh"
-  for mode in nfs iscsi-filesystem iscsi-block; do TEST_SOURCE_MODE="$mode" TEST_IMAGE="michaelcourcy/lvmo-csi:${RELEASE_VERSION:-v0.1.0-alpha.1}" bash "$root/scripts/test-metadata.sh"; done;;
+  for mode in nfs iscsi-filesystem iscsi-block; do TEST_SOURCE_MODE="$mode" bash "$root/scripts/test-metadata.sh"; done;;
  esac
 done

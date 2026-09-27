@@ -67,6 +67,7 @@ spec:
 EOF2
 if [[ ${OPENSHIFT:-false} == true ]]; then
  oc --context "$context" adm policy add-scc-to-user privileged -z default -n "$ns"
+ oc --context "$context" -n lvmo-system policy add-role-to-user system:image-puller "system:serviceaccount:$ns:default" "system:serviceaccount:$ns:backup"
 fi
 k -n "$ns" wait --for=condition=Ready pod/writer --timeout=180s
 for snap in a b; do
@@ -92,6 +93,7 @@ EOF2
  content=$(k -n "$ns" get volumesnapshot "$snap" -o jsonpath='{.status.boundVolumeSnapshotContentName}')
  k annotate volumesnapshotcontent "$content" snapshot.storage.kubernetes.io/allow-volume-mode-change=true --overwrite
  if [[ $snap == a ]]; then base=$(k get volumesnapshotcontent "$content" -o jsonpath='{.status.snapshotHandle}'); fi
+ if [[ $snap == b ]]; then target=$(k get volumesnapshotcontent "$content" -o jsonpath='{.status.snapshotHandle}'); fi
  k -n "$ns" apply -f - <<EOF2
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -156,6 +158,15 @@ k -n "$ns" exec backup -- "${client[@]}" --snapshot=a --device=/dev/clone-a
 k -n "$ns" exec backup -- "${client[@]}" --snapshot=b --base="$base" --device=/dev/clone-b
 # Continuation may omit already-applied ranges and must preserve the result.
 k -n "$ns" exec backup -- "${client[@]}" --snapshot=b --base="$base" --device=/dev/clone-b --offset=65536
+# Two concurrent streams and independent clone reads must reconstruct correctly.
+k -n "$ns" exec backup -- sh -ec '
+ /usr/local/bin/lvmo-metadata --endpoint="$1" --namespace="$2" --snapshot=a --device=/dev/clone-a --output=/backup/concurrent-a & p1=$!
+ /usr/local/bin/lvmo-metadata --endpoint="$1" --namespace="$2" --snapshot=b --device=/dev/clone-b --output=/backup/concurrent-b & p2=$!
+ wait "$p1"; wait "$p2"
+' sh "$endpoint" "$ns"
+if k -n "$ns" exec backup -- "${client[@]}" --snapshot=a --base="$target" --device=/dev/clone-a; then
+ echo 'Reversed snapshots unexpectedly accepted' >&2; exit 1
+fi
 k -n "$ns" exec backup -- sh -c 'echo invalid > /backup/bad-token'
 if k -n "$ns" exec backup -- "${client[@]}" --snapshot=a --device=/dev/clone-a --token-file=/backup/bad-token; then
  echo 'Unauthenticated metadata request unexpectedly succeeded' >&2; exit 1
