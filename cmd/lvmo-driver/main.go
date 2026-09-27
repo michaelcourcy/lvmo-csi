@@ -3,11 +3,10 @@ package main
 import (
 	"flag"
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
-	pb "github.com/michaelcourcy/lvmo-csi/api/v1"
 	"github.com/michaelcourcy/lvmo-csi/internal/driver"
+	"github.com/michaelcourcy/lvmo-csi/internal/routing"
 	"github.com/michaelcourcy/lvmo-csi/internal/rpcutil"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"log"
 	"net"
 	"os"
@@ -21,18 +20,19 @@ var version = "dev"
 
 func main() {
 	endpoint := flag.String("endpoint", "unix:///csi/csi.sock", "CSI endpoint")
-	api := flag.String("api-endpoint", "", "lvmo API endpoint")
+	api := flag.String("api-endpoint", "", "optional default API endpoint for legacy handles and standalone testing")
 	node := flag.String("node-id", "", "node identity")
 	flag.Parse()
-	if *api == "" {
-		log.Fatal("api-endpoint required")
-	}
-	conn, e := grpc.NewClient(*api, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	discover, e := routing.KubernetesDiscovery(driver.Name)
 	if e != nil {
 		log.Fatal(e)
 	}
-	defer conn.Close()
-	d := &driver.Driver{API: pb.NewStorageClient(conn), Endpoint: *api, NodeID: *node, Version: version}
+	router, e := routing.New(*api, discover)
+	if e != nil {
+		log.Fatal(e)
+	}
+	defer router.Close()
+	d := &driver.Driver{API: router, NodeID: *node, Version: version}
 	network, address := "unix", strings.TrimPrefix(*endpoint, "unix://")
 	if strings.HasPrefix(*endpoint, "tcp://") {
 		network = "tcp"

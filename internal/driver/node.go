@@ -168,7 +168,7 @@ func (d *Driver) NodeStageVolume(ctx context.Context, r *csi.NodeStageVolumeRequ
 		if err := unix.Stat(dev, &st); err != nil {
 			return nil, err
 		}
-		dev = "/dev/lvmo-" + v.Id
+		dev = "/dev/" + backend.ID("lvmo-", v.Id)
 		_ = os.Remove(dev)
 		if err := unix.Mknod(dev, unix.S_IFBLK|0600, int(st.Rdev)); err != nil {
 			return nil, err
@@ -345,7 +345,7 @@ func (d *Driver) NodeUnstageVolume(ctx context.Context, r *csi.NodeUnstageVolume
 			}
 		}
 		if os.Getenv("LVMO_ISCSI_HOST_PROC") != "" {
-			_ = os.Remove("/dev/lvmo-" + v.Id)
+			_ = os.Remove("/dev/" + backend.ID("lvmo-", v.Id))
 		}
 		os.Remove(nodeState(r.StagingTargetPath))
 	} else if !os.IsNotExist(e) {
@@ -400,7 +400,7 @@ func (d *Driver) NodeExpandVolume(ctx context.Context, r *csi.NodeExpandVolumeRe
 			}
 			dev := iscsiDevice(portal, v.Iqn)
 			if os.Getenv("LVMO_ISCSI_HOST_PROC") != "" {
-				dev = "/dev/lvmo-" + v.Id
+				dev = "/dev/" + backend.ID("lvmo-", v.Id)
 			}
 			if v.Filesystem == "xfs" {
 				e = run(ctx, "xfs_growfs", r.VolumePath)

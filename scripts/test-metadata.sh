@@ -3,12 +3,12 @@ set -euo pipefail
 context=${KUBE_CONTEXT:-kind-lvmo-e2e}
 ns=lvmo-cbt-test
 mode=${TEST_SOURCE_MODE:-nfs}
-sc=lvmo-nfs
+sc=${TEST_NFS_CLASS:-lvmo-nfs}
 volume_mode=Filesystem
 access=ReadWriteMany
 mount='volumeMounts: [{name: data, mountPath: /data}]'
 writer_image=busybox:1.37
-if [[ $mode != nfs ]]; then sc=lvmo-iscsi; access=ReadWriteOnce; fi
+if [[ $mode != nfs ]]; then sc=${TEST_ISCSI_CLASS:-lvmo-iscsi}; access=ReadWriteOnce; fi
 if [[ $mode == iscsi-block ]]; then
  volume_mode=Block
  mount='volumeDevices: [{name: data, devicePath: /dev/source}]'
@@ -99,7 +99,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata: {name: clone-$snap}
 spec:
-  storageClassName: lvmo-iscsi
+  storageClassName: ${TEST_ISCSI_CLASS:-lvmo-iscsi}
   volumeMode: Block
   accessModes: [ReadWriteOnce]
   resources: {requests: {storage: 128Mi}}

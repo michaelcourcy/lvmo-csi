@@ -116,8 +116,8 @@ else
  image_tag=$RELEASE_VERSION
 fi
 export TEST_IMAGE="$image_repository:$image_tag"
-helm upgrade --install lvmo "$root/charts/lvmo-csi" --kube-context "$context" -n lvmo-system --set apiEndpoint="$private:50051" --set openshift=true --set image.repository="$image_repository" --set image.tag="$image_tag" --wait --timeout 5m
-kubectl --context "$context" apply -f "$root/tests/storageclasses.yaml"
+helm upgrade --install lvmo "$root/charts/lvmo-csi" --kube-context "$context" -n lvmo-system --set openshift=true --set image.repository="$image_repository" --set image.tag="$image_tag" --wait --timeout 5m
+API_ENDPOINT="$private:50051" bash "$root/scripts/install-storageclasses.sh"
 export API_ENDPOINT="$private:50051"
 for suite in "$@"; do
  case $suite in

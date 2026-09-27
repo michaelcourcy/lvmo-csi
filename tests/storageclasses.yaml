@@ -6,6 +6,7 @@ provisioner: lvmo.csi.io
 allowVolumeExpansion: true
 reclaimPolicy: Delete
 parameters:
+  endpoint: 192.168.5.15:50051
   protocol: nfs
   vg: lvmo-test1
 ---
@@ -17,6 +18,7 @@ provisioner: lvmo.csi.io
 allowVolumeExpansion: true
 reclaimPolicy: Delete
 parameters:
+  endpoint: 192.168.5.15:50051
   protocol: iscsi
   vg: lvmo-test1
 ---

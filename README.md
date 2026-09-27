@@ -53,15 +53,27 @@ Install the VolumeSnapshot CRDs and snapshot controller separately if your distr
 
 ```sh
 helm upgrade --install lvmo charts/lvmo-csi -n lvmo-system --create-namespace \
-  --set apiEndpoint=10.0.0.10:50051 \
   --set image.tag=v0.1.0
 # Add --set openshift=true on OpenShift to install the driver's SCC.
-kubectl apply -f tests/storageclasses.yaml  # example only: edit VG names first
+kubectl apply -f tests/storageclasses.yaml  # example only: edit endpoint and VG names first
 ```
 
 Each real Kubernetes node needs a running host `iscsid`, an initiator name in `/etc/iscsi/initiatorname.iscsi`, NFS client support, and network access to the server. The privileged node plugin mounts host devices and the kubelet directory. `iscsiHostProc` is exclusively for nested Kind testing; leave it empty on real nodes.
 
-StorageClass parameters: `protocol` (`nfs`, default, or `iscsi`), `vg` (required with multiple VGs), `filesystem` (`ext4`, default, or `xfs`), and optional `endpoint` (must match the deployment's API endpoint). One driver deployment manages one API endpoint. Restores across protocols must remain in the same VG and use the same driver identity. iSCSI staging takes a persistent, exclusive node lease; all iSCSI volumes are single-node. A different node cannot stage the volume until the previous node unmounts and releases it. There is no automatic failover or fencing of a failed host: before an operator releases a stranded lease through the management API, the old node must be stopped or otherwise prevented from accessing the target. NFS volumes retain multi-node access.
+StorageClass parameters: `endpoint` (required API host:port), `protocol` (`nfs`, default, or `iscsi`), `vg` (required with multiple VGs on that server), and `filesystem` (`ext4`, default, or `xfs`). One driver installation can manage several storage VMs:
+
+```yaml
+parameters:
+  endpoint: storage-a.example.internal:50051
+  protocol: iscsi
+  vg: data
+```
+
+A second class can use `storage-b.example.internal:50051`. The endpoint selects the management API; that API supplies the NFS/iSCSI data address. CSI volume and snapshot handles retain their API endpoint, so node operations, expansion, deletion, restores, and CBT requests still route correctly after a driver restart. Use stable DNS names: changing a StorageClass does not retarget existing handles. The endpoint is also visible in the PV's `spec.csi.volumeAttributes.endpoint`.
+
+The driver discovers backends for listing from StorageClasses, PV handles, and retained VolumeSnapshotContent handles. An unavailable backend returns an error for its operations; it does not prevent the driver from starting or provisioning against another backend. A combined list fails rather than silently omitting an unavailable backend. For restores across protocols, both classes must select the same canonical API endpoint, VG, and driver identity. Cross-server LVM cloning is not supported. The Helm `apiEndpoint` value is now only an optional fallback for legacy unqualified handles or standalone CSI tests.
+
+iSCSI staging takes a persistent, exclusive node lease; all iSCSI volumes are single-node. A different node cannot stage the volume until the previous node unmounts and releases it. There is no automatic failover or fencing of a failed host: before an operator releases a stranded lease through the management API, the old node must be stopped or otherwise prevented from accessing the target. NFS volumes retain multi-node access.
 
 ## Backups and changed block tracking
 

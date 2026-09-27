@@ -2,6 +2,8 @@ image:
   repository: michaelcourcy/lvmo-csi
   tag: dev
   pullPolicy: IfNotPresent
+# Optional fallback for legacy handles and standalone deployments.
+# New StorageClasses select their backend with parameters.endpoint.
 apiEndpoint: ""
 kubeletRoot: /var/lib/kubelet
 openshift: false

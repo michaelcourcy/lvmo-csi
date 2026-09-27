@@ -3,7 +3,6 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 context=${KUBE_CONTEXT:-kind-lvmo-e2e}
 namespace=${DRIVER_NAMESPACE:-lvmo-system}
-endpoint=${API_ENDPOINT:-192.168.5.15:50051}
 k() { kubectl --context "$context" "$@"; }
 k apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshot-metadata/v1.0.0/client/config/crd/cbt.storage.k8s.io_snapshotmetadataservices.yaml
 work=$(mktemp -d)
@@ -13,4 +12,4 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 7 -keyout "$work/tls.key" -out "
 k -n "$namespace" create secret tls lvmo-metadata-tls --cert="$work/tls.crt" --key="$work/tls.key" --dry-run=client -o yaml | k apply -f -
 base64 < "$work/tls.crt" | tr -d '\n' > "$work/ca.b64"
 helm upgrade lvmo "$root/charts/lvmo-csi" --kube-context "$context" -n "$namespace" \
- --reuse-values --set apiEndpoint="$endpoint" --set metadata.enabled=true --set-file metadata.caCert="$work/ca.b64" --wait --timeout 5m
+ --reuse-values --set metadata.enabled=true --set-file metadata.caCert="$work/ca.b64" --wait --timeout 5m

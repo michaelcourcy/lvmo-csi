@@ -28,7 +28,7 @@ The independent `lvmo-metadata` client streams public API ranges, reads the corr
 
 For NFS, the server performs `sync -f` on the mounted source before taking the atomic thin snapshot. No filesystem freeze is held across external commands. The result is a crash-consistent block image; a filesystem restore may replay its journal. Writes still buffered on NFS clients or in applications are not covered. For iSCSI, the client must flush its writes if it requires them included in the snapshot; server-side snapshots cannot flush client application caches. Application-consistent backups need application quiescing by the backup orchestrator.
 
-Raw block backup clones are never mounted or formatted. Filesystem restores retain the source filesystem and grow it if the requested capacity is larger. A filesystem clone can change protocol from NFS to iSCSI, or vice versa, within the same VG. A raw unformatted source cannot be restored as a filesystem.
+Raw block backup clones are never mounted or formatted. Filesystem restores retain the source filesystem and grow it if the requested capacity is larger. A filesystem clone can change protocol from NFS to iSCSI, or vice versa, within the same API endpoint and VG. A raw unformatted source cannot be restored as a filesystem.
 
 ## Ordinary backups and Kasten
 
@@ -41,7 +41,7 @@ Kasten filesystem-to-block export is an independent opt-in:
 - For NFS source volumes, configure `exporterStorageClassName` to select the iSCSI class.
 - VolumeSnapshotContent: `snapshot.storage.kubernetes.io/allow-volume-mode-change: "true"`.
 
-Both classes must use `provisioner: lvmo.csi.io`; the clone must use the source VG. The clone's PVC dataSource references the source VolumeSnapshot in its namespace. Native Block PVCs do not need filesystem-conversion opt-in.
+Both classes must use `provisioner: lvmo.csi.io`; the clone must use the source API endpoint and VG. The clone's PVC dataSource references the source VolumeSnapshot in its namespace. Native Block PVCs do not need filesystem-conversion opt-in.
 
 These settings do not prove that a Kasten version consumes KEP-3314. Kasten CBT consumption, its `preferred` fallback behavior, and complete Kasten export/restore remain separate integration acceptance items. See [Kasten protection documentation](https://docs.kasten.io/latest/usage/protect/) and [export StorageClass configuration](https://www.veeam.com/kb4595).
 

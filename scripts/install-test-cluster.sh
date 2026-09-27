@@ -11,5 +11,5 @@ done
 for manifest in rbac-snapshot-controller.yaml setup-snapshot-controller.yaml; do
  kubectl --context "$context" apply -f "https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/v8.5.0/deploy/kubernetes/snapshot-controller/${manifest}"
 done
-helm upgrade --install lvmo "$root/charts/lvmo-csi" --kube-context "$context" -n lvmo-system --set apiEndpoint="${API_ENDPOINT:-192.168.5.15:50051}" --set iscsiHostProc=/run/lvmo-host-proc --wait --timeout 5m
-kubectl --context "$context" apply -f "$root/tests/storageclasses.yaml"
+helm upgrade --install lvmo "$root/charts/lvmo-csi" --kube-context "$context" -n lvmo-system --set iscsiHostProc=/run/lvmo-host-proc --wait --timeout 5m
+KUBE_CONTEXT="$context" API_ENDPOINT="${API_ENDPOINT:-192.168.5.15:50051}" bash "$root/scripts/install-storageclasses.sh"

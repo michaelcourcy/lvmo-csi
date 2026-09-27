@@ -15,7 +15,8 @@ for suite in "$@"; do
  metadata)
   CSI_ENDPOINT=unix:///tmp/lvmo-csi.sock "$root/bin/integration.test" -test.v -test.timeout=15m
   bash "$root/scripts/enable-metadata.sh"
-  for mode in nfs iscsi-filesystem iscsi-block; do TEST_SOURCE_MODE="$mode" bash "$root/scripts/test-metadata.sh"; done;;
+  for mode in nfs iscsi-filesystem iscsi-block; do TEST_SOURCE_MODE="$mode" bash "$root/scripts/test-metadata.sh"; done
+  bash "$root/scripts/test-routing.sh";;
  *) echo "Unknown suite: $suite" >&2; exit 2;;
  esac
 done

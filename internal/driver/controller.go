@@ -5,6 +5,7 @@ import (
 
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	pb "github.com/michaelcourcy/lvmo-csi/api/v1"
+	"github.com/michaelcourcy/lvmo-csi/internal/routing"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -22,8 +23,8 @@ type Driver struct {
 	csi.UnimplementedControllerServer
 	csi.UnimplementedNodeServer
 	csi.UnimplementedSnapshotMetadataServer
-	API                       pb.StorageClient
-	Endpoint, NodeID, Version string
+	API             pb.StorageClient
+	NodeID, Version string
 }
 
 func (d *Driver) GetPluginInfo(context.Context, *csi.GetPluginInfoRequest) (*csi.GetPluginInfoResponse, error) {
@@ -38,10 +39,9 @@ func (d *Driver) GetPluginCapabilities(context.Context, *csi.GetPluginCapabiliti
 	return out, nil
 }
 func (d *Driver) Probe(ctx context.Context, _ *csi.ProbeRequest) (*csi.ProbeResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	_, err := d.API.GetCapacity(ctx, &pb.CapacityRequest{})
-	return &csi.ProbeResponse{Ready: wrapperspb.Bool(err == nil)}, nil
+	// Readiness describes the router, not the availability of every configured
+	// VM. An unavailable backend must not prevent provisioning on another VM.
+	return &csi.ProbeResponse{Ready: wrapperspb.Bool(true)}, nil
 }
 func validate(caps []*csi.VolumeCapability, protocol string) error {
 	if len(caps) == 0 {
@@ -80,8 +80,13 @@ func capacity(r *csi.CapacityRange) (int64, error) {
 	return n, nil
 }
 func volume(v *pb.Volume) *csi.Volume {
-	return &csi.Volume{VolumeId: v.Id, CapacityBytes: v.Bytes, VolumeContext: map[string]string{"protocol": v.Protocol, "server": v.Server, "path": v.Path, "iqn": v.Iqn, "filesystem": v.Filesystem}}
+	attributes := map[string]string{"protocol": v.Protocol, "server": v.Server, "path": v.Path, "iqn": v.Iqn, "filesystem": v.Filesystem}
+	if endpoint, _, err := routing.Decode(v.Id); err == nil && endpoint != "" {
+		attributes["endpoint"] = endpoint
+	}
+	return &csi.Volume{VolumeId: v.Id, CapacityBytes: v.Bytes, VolumeContext: attributes}
 }
+
 func snapshot(s *pb.Snapshot) *csi.Snapshot {
 	return &csi.Snapshot{SnapshotId: s.Id, SourceVolumeId: s.VolumeId, SizeBytes: s.Bytes, CreationTime: timestamppb.New(time.Unix(s.CreatedUnix, 0)), ReadyToUse: s.Ready}
 }
@@ -99,9 +104,7 @@ func (d *Driver) CreateVolume(ctx context.Context, r *csi.CreateVolumeRequest) (
 	if e := validate(r.VolumeCapabilities, p); e != nil {
 		return nil, e
 	}
-	if endpoint := r.Parameters["endpoint"]; endpoint != "" && endpoint != d.Endpoint {
-		return nil, status.Error(codes.InvalidArgument, "StorageClass endpoint must match this driver deployment")
-	}
+	ctx = routing.WithEndpoint(ctx, r.Parameters["endpoint"])
 	size, e := capacity(r.CapacityRange)
 	if e != nil {
 		return nil, e
@@ -216,7 +219,7 @@ func (d *Driver) GetCapacity(ctx context.Context, r *csi.GetCapacityRequest) (*c
 			return &csi.GetCapacityResponse{}, nil
 		}
 	}
-	v, e := d.API.GetCapacity(ctx, &pb.CapacityRequest{Vg: r.Parameters["vg"]})
+	v, e := d.API.GetCapacity(routing.WithEndpoint(ctx, r.Parameters["endpoint"]), &pb.CapacityRequest{Vg: r.Parameters["vg"]})
 	if e != nil {
 		return nil, e
 	}
@@ -234,7 +237,15 @@ func (d *Driver) DeleteSnapshot(ctx context.Context, r *csi.DeleteSnapshotReques
 	return &csi.DeleteSnapshotResponse{}, e
 }
 func (d *Driver) ListSnapshots(ctx context.Context, r *csi.ListSnapshotsRequest) (*csi.ListSnapshotsResponse, error) {
+	if r.SnapshotId != "" {
+		ctx = routing.WithHandle(ctx, r.SnapshotId)
+	} else if r.SourceVolumeId != "" {
+		ctx = routing.WithHandle(ctx, r.SourceVolumeId)
+	}
 	ss, e := d.API.ListSnapshots(ctx, &pb.Empty{})
+	if status.Code(e) == codes.NotFound {
+		return &csi.ListSnapshotsResponse{}, nil
+	}
 	if e != nil {
 		return nil, e
 	}
