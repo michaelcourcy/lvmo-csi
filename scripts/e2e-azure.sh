@@ -24,6 +24,8 @@ work=$(mktemp -d)
 rg="lvmo-test-$(date +%s)"
 created=false
 installed=false
+metadata_crd_existed=false
+if kubectl --context "$context" get crd snapshotmetadataservices.cbt.storage.k8s.io >/dev/null 2>&1; then metadata_crd_existed=true; fi
 cleanup() {
  status=$?
  trap - EXIT
@@ -31,6 +33,12 @@ cleanup() {
   kubectl --context "$context" delete -f "$root/tests/storageclasses.yaml" --ignore-not-found || true
   helm uninstall lvmo --kube-context "$context" -n lvmo-system || true
   kubectl --context "$context" delete namespace lvmo-system --ignore-not-found --timeout=120s || true
+ fi
+ if [[ $metadata_crd_existed == false ]] && kubectl --context "$context" get crd snapshotmetadataservices.cbt.storage.k8s.io >/dev/null 2>&1; then
+  # Never remove an API that was present before this run or is now in use.
+  if remaining=$(kubectl --context "$context" get snapshotmetadataservices -o name) && [[ -z $remaining ]]; then
+   kubectl --context "$context" delete crd snapshotmetadataservices.cbt.storage.k8s.io || true
+  fi
  fi
  if [[ $created == true ]]; then az group delete --name "$rg" --yes --no-wait; fi
  rm -rf "$work"
