@@ -2,6 +2,8 @@ syntax = "proto3";
 package lvmo.v1;
 option go_package = "github.com/michaelcourcy/lvmo-csi/api/v1;storage";
 service Storage {
+  rpc AcquireVolume(VolumeLease) returns (Empty);
+  rpc ReleaseVolume(VolumeLease) returns (Empty);
  rpc CreateVolume(CreateVolumeRequest) returns (Volume);
  rpc GetVolume(ID) returns (Volume);
  rpc DeleteVolume(ID) returns (Empty);
@@ -27,3 +29,5 @@ message Capacity { int64 available_bytes = 1; }
 message MetadataRequest { string snapshot = 1; string base_snapshot = 2; int64 starting_offset = 3; int32 max_results = 4; }
 message Range { int64 offset = 1; int64 length = 2; }
 message Ranges { int64 capacity = 1; repeated Range ranges = 2; }
+
+message VolumeLease { string volume_id = 1; string node_id = 2; }

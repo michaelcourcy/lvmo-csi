@@ -54,8 +54,8 @@ func validate(caps []*csi.VolumeCapability, protocol string) error {
 		if protocol == "nfs" && c.GetBlock() != nil {
 			return status.Error(codes.InvalidArgument, "NFS requires filesystem access")
 		}
-		if protocol == "iscsi" && c.GetMount() != nil && (c.AccessMode.Mode == csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER || c.AccessMode.Mode == csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER || c.AccessMode.Mode == csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY) {
-			return status.Error(codes.InvalidArgument, "shared writable iSCSI filesystem unsupported")
+		if protocol == "iscsi" && (c.AccessMode.Mode == csi.VolumeCapability_AccessMode_MULTI_NODE_MULTI_WRITER || c.AccessMode.Mode == csi.VolumeCapability_AccessMode_MULTI_NODE_SINGLE_WRITER || c.AccessMode.Mode == csi.VolumeCapability_AccessMode_MULTI_NODE_READER_ONLY) {
+			return status.Error(codes.InvalidArgument, "multi-node iSCSI access unsupported")
 		}
 		if m := c.GetMount(); m != nil && protocol == "iscsi" && m.FsType != "" && m.FsType != "ext4" && m.FsType != "xfs" {
 			return status.Error(codes.InvalidArgument, "unsupported filesystem")

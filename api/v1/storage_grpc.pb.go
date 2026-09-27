@@ -19,6 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	Storage_AcquireVolume_FullMethodName  = "/lvmo.v1.Storage/AcquireVolume"
+	Storage_ReleaseVolume_FullMethodName  = "/lvmo.v1.Storage/ReleaseVolume"
 	Storage_CreateVolume_FullMethodName   = "/lvmo.v1.Storage/CreateVolume"
 	Storage_GetVolume_FullMethodName      = "/lvmo.v1.Storage/GetVolume"
 	Storage_DeleteVolume_FullMethodName   = "/lvmo.v1.Storage/DeleteVolume"
@@ -35,6 +37,8 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type StorageClient interface {
+	AcquireVolume(ctx context.Context, in *VolumeLease, opts ...grpc.CallOption) (*Empty, error)
+	ReleaseVolume(ctx context.Context, in *VolumeLease, opts ...grpc.CallOption) (*Empty, error)
 	CreateVolume(ctx context.Context, in *CreateVolumeRequest, opts ...grpc.CallOption) (*Volume, error)
 	GetVolume(ctx context.Context, in *ID, opts ...grpc.CallOption) (*Volume, error)
 	DeleteVolume(ctx context.Context, in *ID, opts ...grpc.CallOption) (*Empty, error)
@@ -53,6 +57,26 @@ type storageClient struct {
 
 func NewStorageClient(cc grpc.ClientConnInterface) StorageClient {
 	return &storageClient{cc}
+}
+
+func (c *storageClient) AcquireVolume(ctx context.Context, in *VolumeLease, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, Storage_AcquireVolume_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *storageClient) ReleaseVolume(ctx context.Context, in *VolumeLease, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, Storage_ReleaseVolume_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *storageClient) CreateVolume(ctx context.Context, in *CreateVolumeRequest, opts ...grpc.CallOption) (*Volume, error) {
@@ -168,6 +192,8 @@ type Storage_MetadataClient = grpc.ServerStreamingClient[Ranges]
 // All implementations must embed UnimplementedStorageServer
 // for forward compatibility.
 type StorageServer interface {
+	AcquireVolume(context.Context, *VolumeLease) (*Empty, error)
+	ReleaseVolume(context.Context, *VolumeLease) (*Empty, error)
 	CreateVolume(context.Context, *CreateVolumeRequest) (*Volume, error)
 	GetVolume(context.Context, *ID) (*Volume, error)
 	DeleteVolume(context.Context, *ID) (*Empty, error)
@@ -188,6 +214,12 @@ type StorageServer interface {
 // pointer dereference when methods are called.
 type UnimplementedStorageServer struct{}
 
+func (UnimplementedStorageServer) AcquireVolume(context.Context, *VolumeLease) (*Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method AcquireVolume not implemented")
+}
+func (UnimplementedStorageServer) ReleaseVolume(context.Context, *VolumeLease) (*Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReleaseVolume not implemented")
+}
 func (UnimplementedStorageServer) CreateVolume(context.Context, *CreateVolumeRequest) (*Volume, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateVolume not implemented")
 }
@@ -237,6 +269,42 @@ func RegisterStorageServer(s grpc.ServiceRegistrar, srv StorageServer) {
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&Storage_ServiceDesc, srv)
+}
+
+func _Storage_AcquireVolume_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VolumeLease)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(StorageServer).AcquireVolume(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Storage_AcquireVolume_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(StorageServer).AcquireVolume(ctx, req.(*VolumeLease))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Storage_ReleaseVolume_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VolumeLease)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(StorageServer).ReleaseVolume(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Storage_ReleaseVolume_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(StorageServer).ReleaseVolume(ctx, req.(*VolumeLease))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _Storage_CreateVolume_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -419,6 +487,14 @@ var Storage_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "lvmo.v1.Storage",
 	HandlerType: (*StorageServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "AcquireVolume",
+			Handler:    _Storage_AcquireVolume_Handler,
+		},
+		{
+			MethodName: "ReleaseVolume",
+			Handler:    _Storage_ReleaseVolume_Handler,
+		},
 		{
 			MethodName: "CreateVolume",
 			Handler:    _Storage_CreateVolume_Handler,

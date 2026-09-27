@@ -46,6 +46,7 @@ type Config struct {
 	VGs                         []string
 }
 type state struct {
+	Owners            map[string]string       `json:"owners,omitempty"`
 	SnapshotOrder     map[string]uint64       `json:"snapshot_order,omitempty"`
 	NextSnapshotOrder uint64                  `json:"next_snapshot_order,omitempty"`
 	Deleting          map[string]bool         `json:"deleting,omitempty"`
@@ -99,6 +100,9 @@ func New(cfg Config, run Runner) (*Backend, error) {
 	}
 	if err != nil && !os.IsNotExist(err) {
 		return nil, err
+	}
+	if b.state.Owners == nil {
+		b.state.Owners = map[string]string{}
 	}
 	if b.state.SnapshotOrder == nil {
 		b.state.SnapshotOrder = map[string]uint64{}
@@ -422,6 +426,9 @@ func (b *Backend) DeleteVolume(ctx context.Context, r *pb.ID) (*pb.Empty, error)
 	if v == nil {
 		return &pb.Empty{}, nil
 	}
+	if b.state.Owners[r.Id] != "" {
+		return nil, status.Error(codes.FailedPrecondition, "volume is staged on a node")
+	}
 	b.state.Deleting[r.Id] = true
 	if err := b.save(); err != nil {
 		return nil, internal(err)
@@ -700,4 +707,38 @@ func (b *Backend) Reap(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// AcquireVolume fences iSCSI staging across nodes. Persisting ownership prevents
+// an API restart from permitting two independent filesystem writers.
+func (b *Backend) AcquireVolume(ctx context.Context, r *pb.VolumeLease) (*pb.Empty, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if r.VolumeId == "" || r.NodeId == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume and node required")
+	}
+	v := b.state.Volumes[r.VolumeId]
+	if v == nil || !v.Ready || b.state.Deleting[r.VolumeId] {
+		return nil, status.Error(codes.NotFound, "volume not found")
+	}
+	if v.Protocol != "iscsi" {
+		return &pb.Empty{}, nil
+	}
+	if owner := b.state.Owners[r.VolumeId]; owner != "" && owner != r.NodeId {
+		return nil, status.Error(codes.FailedPrecondition, "iSCSI volume is staged on another node")
+	}
+	b.state.Owners[r.VolumeId] = r.NodeId
+	return &pb.Empty{}, internal(b.save())
+}
+func (b *Backend) ReleaseVolume(ctx context.Context, r *pb.VolumeLease) (*pb.Empty, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if r.VolumeId == "" || r.NodeId == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume and node required")
+	}
+	if owner := b.state.Owners[r.VolumeId]; owner != "" && owner != r.NodeId {
+		return nil, status.Error(codes.FailedPrecondition, "volume belongs to another node")
+	}
+	delete(b.state.Owners, r.VolumeId)
+	return &pb.Empty{}, internal(b.save())
 }

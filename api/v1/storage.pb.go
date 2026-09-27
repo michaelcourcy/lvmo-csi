@@ -909,6 +909,58 @@ func (x *Ranges) GetRanges() []*Range {
 	return nil
 }
 
+type VolumeLease struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	VolumeId      string                 `protobuf:"bytes,1,opt,name=volume_id,json=volumeId,proto3" json:"volume_id,omitempty"`
+	NodeId        string                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VolumeLease) Reset() {
+	*x = VolumeLease{}
+	mi := &file_api_v1_storage_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VolumeLease) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VolumeLease) ProtoMessage() {}
+
+func (x *VolumeLease) ProtoReflect() protoreflect.Message {
+	mi := &file_api_v1_storage_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VolumeLease.ProtoReflect.Descriptor instead.
+func (*VolumeLease) Descriptor() ([]byte, []int) {
+	return file_api_v1_storage_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *VolumeLease) GetVolumeId() string {
+	if x != nil {
+		return x.VolumeId
+	}
+	return ""
+}
+
+func (x *VolumeLease) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
 var File_api_v1_storage_proto protoreflect.FileDescriptor
 
 const file_api_v1_storage_proto_rawDesc = "" +
@@ -983,8 +1035,13 @@ const file_api_v1_storage_proto_rawDesc = "" +
 	"\x06length\x18\x02 \x01(\x03R\x06length\"L\n" +
 	"\x06Ranges\x12\x1a\n" +
 	"\bcapacity\x18\x01 \x01(\x03R\bcapacity\x12&\n" +
-	"\x06ranges\x18\x02 \x03(\v2\x0e.lvmo.v1.RangeR\x06ranges2\xa2\x04\n" +
-	"\aStorage\x12=\n" +
+	"\x06ranges\x18\x02 \x03(\v2\x0e.lvmo.v1.RangeR\x06ranges\"C\n" +
+	"\vVolumeLease\x12\x1b\n" +
+	"\tvolume_id\x18\x01 \x01(\tR\bvolumeId\x12\x17\n" +
+	"\anode_id\x18\x02 \x01(\tR\x06nodeId2\x90\x05\n" +
+	"\aStorage\x125\n" +
+	"\rAcquireVolume\x12\x14.lvmo.v1.VolumeLease\x1a\x0e.lvmo.v1.Empty\x125\n" +
+	"\rReleaseVolume\x12\x14.lvmo.v1.VolumeLease\x1a\x0e.lvmo.v1.Empty\x12=\n" +
 	"\fCreateVolume\x12\x1c.lvmo.v1.CreateVolumeRequest\x1a\x0f.lvmo.v1.Volume\x12)\n" +
 	"\tGetVolume\x12\v.lvmo.v1.ID\x1a\x0f.lvmo.v1.Volume\x12+\n" +
 	"\fDeleteVolume\x12\v.lvmo.v1.ID\x1a\x0e.lvmo.v1.Empty\x127\n" +
@@ -1008,7 +1065,7 @@ func file_api_v1_storage_proto_rawDescGZIP() []byte {
 	return file_api_v1_storage_proto_rawDescData
 }
 
-var file_api_v1_storage_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_api_v1_storage_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_api_v1_storage_proto_goTypes = []any{
 	(*Empty)(nil),               // 0: lvmo.v1.Empty
 	(*ID)(nil),                  // 1: lvmo.v1.ID
@@ -1024,33 +1081,38 @@ var file_api_v1_storage_proto_goTypes = []any{
 	(*MetadataRequest)(nil),     // 11: lvmo.v1.MetadataRequest
 	(*Range)(nil),               // 12: lvmo.v1.Range
 	(*Ranges)(nil),              // 13: lvmo.v1.Ranges
+	(*VolumeLease)(nil),         // 14: lvmo.v1.VolumeLease
 }
 var file_api_v1_storage_proto_depIdxs = []int32{
 	3,  // 0: lvmo.v1.Volumes.volumes:type_name -> lvmo.v1.Volume
 	7,  // 1: lvmo.v1.Snapshots.snapshots:type_name -> lvmo.v1.Snapshot
 	12, // 2: lvmo.v1.Ranges.ranges:type_name -> lvmo.v1.Range
-	2,  // 3: lvmo.v1.Storage.CreateVolume:input_type -> lvmo.v1.CreateVolumeRequest
-	1,  // 4: lvmo.v1.Storage.GetVolume:input_type -> lvmo.v1.ID
-	1,  // 5: lvmo.v1.Storage.DeleteVolume:input_type -> lvmo.v1.ID
-	5,  // 6: lvmo.v1.Storage.ExpandVolume:input_type -> lvmo.v1.ExpandRequest
-	0,  // 7: lvmo.v1.Storage.ListVolumes:input_type -> lvmo.v1.Empty
-	6,  // 8: lvmo.v1.Storage.CreateSnapshot:input_type -> lvmo.v1.SnapshotRequest
-	1,  // 9: lvmo.v1.Storage.DeleteSnapshot:input_type -> lvmo.v1.ID
-	0,  // 10: lvmo.v1.Storage.ListSnapshots:input_type -> lvmo.v1.Empty
-	9,  // 11: lvmo.v1.Storage.GetCapacity:input_type -> lvmo.v1.CapacityRequest
-	11, // 12: lvmo.v1.Storage.Metadata:input_type -> lvmo.v1.MetadataRequest
-	3,  // 13: lvmo.v1.Storage.CreateVolume:output_type -> lvmo.v1.Volume
-	3,  // 14: lvmo.v1.Storage.GetVolume:output_type -> lvmo.v1.Volume
-	0,  // 15: lvmo.v1.Storage.DeleteVolume:output_type -> lvmo.v1.Empty
-	3,  // 16: lvmo.v1.Storage.ExpandVolume:output_type -> lvmo.v1.Volume
-	4,  // 17: lvmo.v1.Storage.ListVolumes:output_type -> lvmo.v1.Volumes
-	7,  // 18: lvmo.v1.Storage.CreateSnapshot:output_type -> lvmo.v1.Snapshot
-	0,  // 19: lvmo.v1.Storage.DeleteSnapshot:output_type -> lvmo.v1.Empty
-	8,  // 20: lvmo.v1.Storage.ListSnapshots:output_type -> lvmo.v1.Snapshots
-	10, // 21: lvmo.v1.Storage.GetCapacity:output_type -> lvmo.v1.Capacity
-	13, // 22: lvmo.v1.Storage.Metadata:output_type -> lvmo.v1.Ranges
-	13, // [13:23] is the sub-list for method output_type
-	3,  // [3:13] is the sub-list for method input_type
+	14, // 3: lvmo.v1.Storage.AcquireVolume:input_type -> lvmo.v1.VolumeLease
+	14, // 4: lvmo.v1.Storage.ReleaseVolume:input_type -> lvmo.v1.VolumeLease
+	2,  // 5: lvmo.v1.Storage.CreateVolume:input_type -> lvmo.v1.CreateVolumeRequest
+	1,  // 6: lvmo.v1.Storage.GetVolume:input_type -> lvmo.v1.ID
+	1,  // 7: lvmo.v1.Storage.DeleteVolume:input_type -> lvmo.v1.ID
+	5,  // 8: lvmo.v1.Storage.ExpandVolume:input_type -> lvmo.v1.ExpandRequest
+	0,  // 9: lvmo.v1.Storage.ListVolumes:input_type -> lvmo.v1.Empty
+	6,  // 10: lvmo.v1.Storage.CreateSnapshot:input_type -> lvmo.v1.SnapshotRequest
+	1,  // 11: lvmo.v1.Storage.DeleteSnapshot:input_type -> lvmo.v1.ID
+	0,  // 12: lvmo.v1.Storage.ListSnapshots:input_type -> lvmo.v1.Empty
+	9,  // 13: lvmo.v1.Storage.GetCapacity:input_type -> lvmo.v1.CapacityRequest
+	11, // 14: lvmo.v1.Storage.Metadata:input_type -> lvmo.v1.MetadataRequest
+	0,  // 15: lvmo.v1.Storage.AcquireVolume:output_type -> lvmo.v1.Empty
+	0,  // 16: lvmo.v1.Storage.ReleaseVolume:output_type -> lvmo.v1.Empty
+	3,  // 17: lvmo.v1.Storage.CreateVolume:output_type -> lvmo.v1.Volume
+	3,  // 18: lvmo.v1.Storage.GetVolume:output_type -> lvmo.v1.Volume
+	0,  // 19: lvmo.v1.Storage.DeleteVolume:output_type -> lvmo.v1.Empty
+	3,  // 20: lvmo.v1.Storage.ExpandVolume:output_type -> lvmo.v1.Volume
+	4,  // 21: lvmo.v1.Storage.ListVolumes:output_type -> lvmo.v1.Volumes
+	7,  // 22: lvmo.v1.Storage.CreateSnapshot:output_type -> lvmo.v1.Snapshot
+	0,  // 23: lvmo.v1.Storage.DeleteSnapshot:output_type -> lvmo.v1.Empty
+	8,  // 24: lvmo.v1.Storage.ListSnapshots:output_type -> lvmo.v1.Snapshots
+	10, // 25: lvmo.v1.Storage.GetCapacity:output_type -> lvmo.v1.Capacity
+	13, // 26: lvmo.v1.Storage.Metadata:output_type -> lvmo.v1.Ranges
+	15, // [15:27] is the sub-list for method output_type
+	3,  // [3:15] is the sub-list for method input_type
 	3,  // [3:3] is the sub-list for extension type_name
 	3,  // [3:3] is the sub-list for extension extendee
 	0,  // [0:3] is the sub-list for field type_name
@@ -1067,7 +1129,7 @@ func file_api_v1_storage_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_v1_storage_proto_rawDesc), len(file_api_v1_storage_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   14,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -45,7 +45,7 @@ kubectl apply -f tests/storageclasses.yaml  # example only: edit VG names first
 
 Each real Kubernetes node needs a running host `iscsid`, an initiator name in `/etc/iscsi/initiatorname.iscsi`, NFS client support, and network access to the server. The privileged node plugin mounts host devices and the kubelet directory. `iscsiHostProc` is exclusively for nested Kind testing; leave it empty on real nodes.
 
-StorageClass parameters: `protocol` (`nfs`, default, or `iscsi`), `vg` (required with multiple VGs), `filesystem` (`ext4`, default, or `xfs`), and optional `endpoint` (must match the deployment's API endpoint). One driver deployment manages one API endpoint. Restores across protocols must remain in the same VG and use the same driver identity. Mounted iSCSI filesystems cannot be shared between writers on multiple nodes.
+StorageClass parameters: `protocol` (`nfs`, default, or `iscsi`), `vg` (required with multiple VGs), `filesystem` (`ext4`, default, or `xfs`), and optional `endpoint` (must match the deployment's API endpoint). One driver deployment manages one API endpoint. Restores across protocols must remain in the same VG and use the same driver identity. iSCSI staging takes a persistent, exclusive node lease; all iSCSI volumes are single-node. A different node cannot stage the volume until the previous node unmounts and releases it. There is no automatic failover or fencing of a failed host: before an operator releases a stranded lease through the management API, the old node must be stopped or otherwise prevented from accessing the target. NFS volumes retain multi-node access.
 
 ## Backups and changed block tracking
 

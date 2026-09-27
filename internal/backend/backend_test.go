@@ -97,3 +97,39 @@ func TestRawClonePreservesFilesystemAndDoesNotFormat(t *testing.T) {
 		t.Fatalf("incompatible retry accepted: %v", e)
 	}
 }
+
+func TestISCSIOwnershipSurvivesRestart(t *testing.T) {
+	r := &recordingRunner{}
+	b := testBackend(t, r)
+	ctx := context.Background()
+	v, e := b.CreateVolume(ctx, &pb.CreateVolumeRequest{Name: "owned", Bytes: 128 << 20, Protocol: "iscsi", Block: true})
+	if e != nil {
+		t.Fatal(e)
+	}
+	a := &pb.VolumeLease{VolumeId: v.Id, NodeId: "node-a"}
+	if _, e = b.AcquireVolume(ctx, a); e != nil {
+		t.Fatal(e)
+	}
+	b, e = New(b.cfg, r)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = b.AcquireVolume(ctx, &pb.VolumeLease{VolumeId: v.Id, NodeId: "node-b"}); status.Code(e) != codes.FailedPrecondition {
+		t.Fatalf("second node acquired volume: %v", e)
+	}
+	if _, e = b.DeleteVolume(ctx, &pb.ID{Id: v.Id}); status.Code(e) != codes.FailedPrecondition {
+		t.Fatalf("staged volume deleted: %v", e)
+	}
+	if _, e = b.ReleaseVolume(ctx, &pb.VolumeLease{VolumeId: v.Id, NodeId: "node-b"}); status.Code(e) != codes.FailedPrecondition {
+		t.Fatalf("wrong owner released volume: %v", e)
+	}
+	if _, e = b.AcquireVolume(ctx, a); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = b.ReleaseVolume(ctx, a); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = b.DeleteVolume(ctx, &pb.ID{Id: v.Id}); e != nil {
+		t.Fatal(e)
+	}
+}

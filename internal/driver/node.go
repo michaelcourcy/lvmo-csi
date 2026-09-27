@@ -114,6 +114,9 @@ func (d *Driver) NodeStageVolume(ctx context.Context, r *csi.NodeStageVolumeRequ
 	if !strings.Contains(portal, ":") {
 		portal += ":3260"
 	}
+	if _, err := d.API.AcquireVolume(ctx, &pb.VolumeLease{VolumeId: v.Id, NodeId: d.NodeID}); err != nil {
+		return nil, err
+	}
 	alreadyStaged := mounted(ctx, r.StagingTargetPath) || mounted(ctx, filepath.Join(r.StagingTargetPath, "block"))
 	defer func() {
 		if resultErr == nil || alreadyStaged {
@@ -126,7 +129,15 @@ func (d *Driver) NodeStageVolume(ctx context.Context, r *csi.NodeStageVolumeRequ
 				_ = run(cleanup, "umount", path)
 			}
 		}
-		_ = run(cleanup, "iscsiadm", "-m", "node", "-T", v.Iqn, "-p", portal, "--logout")
+		if mounted(cleanup, r.StagingTargetPath) || mounted(cleanup, filepath.Join(r.StagingTargetPath, "block")) {
+			return
+		}
+		if err := nodeCommand(cleanup, "iscsiadm", "-m", "node", "-T", v.Iqn, "-p", portal, "--logout").Run(); err != nil {
+			if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 21 {
+				return
+			}
+		}
+		_, _ = d.API.ReleaseVolume(cleanup, &pb.VolumeLease{VolumeId: v.Id, NodeId: d.NodeID})
 	}()
 	dev := iscsiDevice(portal, v.Iqn)
 	if _, e = os.Stat(dev); e != nil {
@@ -326,6 +337,11 @@ func (d *Driver) NodeUnstageVolume(ctx context.Context, r *csi.NodeUnstageVolume
 						return nil, status.Errorf(codes.Internal, "iscsi cleanup: %v: %s", err, out)
 					}
 				}
+			}
+		}
+		if v.Protocol == "iscsi" {
+			if _, err := d.API.ReleaseVolume(ctx, &pb.VolumeLease{VolumeId: v.Id, NodeId: d.NodeID}); err != nil {
+				return nil, err
 			}
 		}
 		if os.Getenv("LVMO_ISCSI_HOST_PROC") != "" {
