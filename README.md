@@ -94,7 +94,7 @@ flowchart LR
 
 The walkthrough creates an NFS RWX PVC, writes data, and restores a snapshot. It targets macOS Apple Silicon. The separate Docker Desktop/Lima topology has not yet been validated end to end; the earlier automated results used Kind inside Lima.
 
-**Release prerequisite:** `michaelcourcy/lvmo-csi:v0.1.0-alpha.1` is published on Docker Hub for Linux AMD64 and ARM64. The matching GitHub release containing the Linux API binary, checksums, and Helm chart is still pending. The full installation below requires those additional artifacts; the image alone does not install the storage-server API.
+**Release artifacts:** `michaelcourcy/lvmo-csi:v0.1.0-alpha.1` is published on Docker Hub for Linux AMD64 and ARM64. The matching [GitHub release](https://github.com/michaelcourcy/lvmo-csi/releases/tag/v0.1.0-alpha.1) provides the Linux API binaries, checksums, and Helm chart used below.
 
 ### 1. Prepare your laptop and select a release
 
