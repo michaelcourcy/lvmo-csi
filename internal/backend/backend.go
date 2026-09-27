@@ -55,10 +55,11 @@ type state struct {
 }
 type Backend struct {
 	pb.UnimplementedStorageServer
-	mu    sync.Mutex
-	cfg   Config
-	run   Runner
-	state state
+	mu         sync.Mutex
+	cfg        Config
+	run        Runner
+	state      state
+	lastExport int64
 }
 
 var validName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.+-]{0,100}$`)
@@ -368,7 +369,7 @@ func (b *Backend) publish(ctx context.Context, v *pb.Volume) error {
 		if err := os.WriteFile("/etc/exports.d/lvmo-"+v.Id+".exports", []byte(line), 0644); err != nil {
 			return err
 		}
-		return b.cmd(ctx, "exportfs", "-ra")
+		return b.refreshExports(ctx)
 	}
 	// targetcli operations are idempotent after checking the JSON configuration.
 	if err := b.cmd(ctx, "targetcli", "/backstores/block/"+v.Id, "ls"); err != nil {
@@ -436,34 +437,25 @@ func (b *Backend) DeleteVolume(ctx context.Context, r *pb.ID) (*pb.Empty, error)
 	if v.Protocol == "nfs" {
 		// Removing the exports file plus exportfs -ra is idempotent.
 
-		if err := os.Remove("/etc/exports.d/lvmo-" + v.Id + ".exports"); err != nil && !os.IsNotExist(err) {
+		removed := false
+		if err := os.Remove("/etc/exports.d/lvmo-" + v.Id + ".exports"); err == nil {
+			removed = true
+		} else if !os.IsNotExist(err) {
 			return nil, internal(err)
 		}
-		if err := b.cmd(ctx, "exportfs", "-ra"); err != nil {
+		// Retry a failed etab update, but never flush repeatedly while waiting for
+		// the kernel to release an already-unexported filesystem.
+		etab, err := os.ReadFile("/var/lib/nfs/etab")
+		if err != nil && !os.IsNotExist(err) {
 			return nil, internal(err)
 		}
-		if err := b.cmd(ctx, "exportfs", "-f"); err != nil {
-			return nil, internal(err)
-		}
-		// Flush entries created in the current second as well.
-		for _, cache := range []string{"nfsd.export", "nfsd.fh"} {
-			if err := os.WriteFile("/proc/net/rpc/"+cache+"/flush", []byte(strconv.FormatInt(time.Now().Unix()+1, 10)+"\n"), 0600); err != nil {
+		if removed || strings.Contains(string(etab), v.Path+" ") || strings.Contains(string(etab), v.Path+"\t") {
+			if err = b.refreshExports(ctx); err != nil {
 				return nil, internal(err)
 			}
 		}
 		if b.cmd(ctx, "mountpoint", "-q", v.Path) == nil {
-			var err error
-			for attempt := 0; attempt < 5; attempt++ {
-				err = b.cmd(ctx, "umount", v.Path)
-				if err == nil {
-					break
-				}
-				select {
-				case <-ctx.Done():
-					return nil, status.FromContextError(ctx.Err()).Err()
-				case <-time.After(200 * time.Millisecond):
-				}
-			}
+			err := b.cmd(ctx, "umount", v.Path)
 			if err != nil {
 				if strings.Contains(err.Error(), "busy") {
 					return &pb.Empty{}, nil
@@ -741,4 +733,21 @@ func (b *Backend) ReleaseVolume(ctx context.Context, r *pb.VolumeLease) (*pb.Emp
 	}
 	delete(b.state.Owners, r.VolumeId)
 	return &pb.Empty{}, internal(b.save())
+}
+
+func (b *Backend) refreshExports(ctx context.Context) error {
+	now := time.Now().Unix()
+	if now <= b.lastExport {
+		wait := time.Until(time.Unix(b.lastExport+1, 0))
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	err := b.cmd(ctx, "exportfs", "-ra")
+	b.lastExport = time.Now().Unix()
+	return err
 }

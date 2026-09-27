@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
+	"github.com/michaelcourcy/lvmo-csi/internal/backend"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"os"
@@ -28,6 +29,13 @@ func TestFailedCreateRecovery(t *testing.T) {
 	defer cancel()
 	cap := &csi.VolumeCapability{AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER}, AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{FsType: "xfs"}}}
 	req := &csi.CreateVolumeRequest{Name: fmt.Sprintf("recovery-%d", time.Now().UnixNano()), CapacityRange: &csi.CapacityRange{RequiredBytes: 16 << 20}, Parameters: map[string]string{"vg": "lvmo-test2", "protocol": "iscsi"}, VolumeCapabilities: []*csi.VolumeCapability{cap}}
+	t.Cleanup(func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if _, err := controller.DeleteVolume(cleanup, &csi.DeleteVolumeRequest{VolumeId: backend.ID("v-", req.Name)}); err != nil {
+			t.Error(err)
+		}
+	})
 	if _, e = controller.CreateVolume(ctx, req); e == nil {
 		t.Fatal("XFS formatting of undersized LV unexpectedly succeeded")
 	}
