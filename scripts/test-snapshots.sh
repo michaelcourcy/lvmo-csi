@@ -24,7 +24,11 @@ fi
 for file in "$work"/01_restore-in-same-namespace/*.yaml; do
  envsubst < "$file" | k apply -f -
  case "$file" in
- *02_*) k -n "$NAMESPACE" wait --for=condition=Ready pod/pod-on-original-pvc --timeout=180s ;;
+ *02_*)
+  k -n "$NAMESPACE" wait --for=condition=Ready pod/pod-on-original-pvc --timeout=180s
+  # Flush the initiator's filesystem before the storage-server snapshot.
+  k -n "$NAMESPACE" exec pod-on-original-pvc -- sh -ec 'for i in 1 2 3 4 5 6 7 8 9 10; do test -f /data/test-file && break; sleep 1; done; test "$(cat /data/test-file)" = "test data"; sync'
+  ;;
  *03_*) k -n "$NAMESPACE" wait --for=jsonpath='{.status.readyToUse}'=true volumesnapshot/snap-original-pvc --timeout=180s ;;
  esac
 done
