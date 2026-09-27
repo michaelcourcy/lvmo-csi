@@ -320,8 +320,6 @@ The API service in step 4 uses `--nfs-insecure` for Lima's forwarded connections
 
 The flag makes the API include `insecure` in every NFS export it manages, including new PVCs, restored PVCs, and existing exports regenerated on API restart. No per-PVC export edits are needed. Keep the tutorial's Mac listeners bound to `127.0.0.1`; for directly connected storage servers, leave the flag disabled unless this source-port allowance is required.
 
-If you installed `v0.1.0-alpha.1`, upgrade the storage API binary using step 3's download and checksum commands with `LVMO_VERSION=v0.1.0-alpha.2` before adding the flag. When replacing a running binary, run `systemctl stop lvmo-api` immediately before the `install` command, then update the service in step 4, run `systemctl daemon-reload`, and start it again. Existing volumes remain in the preserved state directory; you must not rerun the disk, VG, or pool creation commands. The old API does not recognize this flag. Startup reconciliation replaces the earlier manual export workaround with the configured policy.
-
 Create the PVC and pod:
 
 ```sh
