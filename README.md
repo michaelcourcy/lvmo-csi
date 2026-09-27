@@ -20,6 +20,35 @@ flowchart LR
 
 The metadata path supplies byte ranges; the iSCSI clone supplies the corresponding bytes. Ordinary filesystem backups use filesystem clones and do not require the metadata sidecar.
 
+### Why thin pools?
+
+**Each PVC gets its own real logical volume (LV), with its own block device and capacity.** Filesystem volumes also have their own filesystem. You create a thin pool once during storage-server setup; the driver then creates each PVC's thin LV inside that pool automatically.
+
+```text
+Volume group: lvmo-data
+└── Thin pool: lvmo-pool — shared backing storage
+    ├── PVC A → its own thin LV → its own filesystem
+    ├── PVC B → its own thin LV → its own filesystem
+    └── PVC C → its own thin LV → raw block device
+```
+
+The pool is a special LVM logical volume that supplies physical blocks to these individual volumes. It is not a shared filesystem containing all PVCs as directories.
+
+| Allocation model | What a 10 GiB PVC reserves |
+| --- | --- |
+| Traditional (thick) LV | 10 GiB of backing storage immediately from the volume group |
+| Thin LV | A 10 GiB logical device; backing blocks are allocated from the pool as writes occur, including filesystem initialization |
+
+We use thin LVs for three related capabilities:
+
+- **Space allocation on demand:** each PVC has its own size limit without reserving its full capacity immediately.
+- **Snapshots and clones:** an LVM thin snapshot initially shares its source's blocks. Subsequent writes allocate separate blocks, preserving the snapshot's contents without copying the entire volume.
+- **Changed-block tracking:** the driver compares mappings from thin-pool metadata to identify allocated and changed byte ranges for CSI SnapshotMetadata, without scanning the entire volume's contents. See [metadata semantics](docs/metadata.md).
+
+One thick LV per PVC is a valid storage design, but this driver requires thin pools. Supporting thick LVs would require a different implementation for snapshots, clones, and changed-block tracking.
+
+The tradeoff is shared physical capacity: the sum of PVC sizes can exceed the pool's data capacity, and snapshots retain blocks that might otherwise be reclaimed. Monitor both pool data and metadata usage and extend the pool before either fills. A PVC's declared size does not guarantee that much free space in the pool; pool exhaustion can affect every volume using it.
+
 ## Build
 
 Requires Go 1.26.3. Development scripts target macOS Apple Silicon with Lima, Kind, Helm, kubectl, and Docker CLI.
@@ -189,6 +218,8 @@ vgcreate lvmo-data "$LVMO_LOOP"
 lvcreate --type thin-pool -L 10G --poolmetadatasize 128M -n lvmo-pool lvmo-data
 lvs
 ```
+
+The `lvcreate --type thin-pool` command above creates the shared pool, not a PVC volume. It allocates 10 GiB for data and 128 MiB for allocation metadata inside `lvmo-data`. The driver creates a separate thin LV for each PVC later; see [Why thin pools?](#why-thin-pools).
 
 The loop-backed disk is a disposable demonstration disk created inside this VM. Run its creation commands once on the fresh VM. A real storage server should use a dedicated persistent disk or partition. This demo does not configure loop-device restoration after reboot; recreate the lab if you reboot it.
 
