@@ -39,10 +39,10 @@ cleanup() {
 trap cleanup EXIT
 # Transfer only this project's build into a private, short-lived blob container.
 # Azure VM Run Command avoids opening SSH on the existing cluster subnet.
-mkdir -p bin
-for cmd in lvmo-csi lvmo-driver lvmo-metadata; do CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "bin/$cmd" "./cmd/$cmd"; done
-for suite in sanity integration; do CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c -o "bin/$suite.test" "./tests/$suite"; done
-tar --exclude=.git --exclude=.test --exclude=dist -czf "$work/source.tgz" .
+mkdir -p "$work/bin"
+for cmd in lvmo-csi lvmo-driver lvmo-metadata; do CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$work/bin/$cmd" "./cmd/$cmd"; done
+for suite in sanity integration; do CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c -o "$work/bin/$suite.test" "./tests/$suite"; done
+tar -czf "$work/source.tgz" scripts tests -C "$work" bin
 az group create -n "$rg" -l "$location" --tags project=lvmo-csi purpose=automated-test >/dev/null
 created=true
 account="lvmotest$(date +%s)"
@@ -56,12 +56,21 @@ az network nsg rule create -g "$rg" --nsg-name lvmo -n storage --priority 110 --
 ssh-keygen -q -t ed25519 -N '' -f "$work/key"
 az vm create -g "$rg" -n storage --image Ubuntu2404 --size Standard_D2s_v5 --admin-username lvmo --ssh-key-values "$work/key.pub" --subnet "$subnet" --nsg lvmo --public-ip-address "" --os-disk-size-gb 40 > "$work/vm.json"
 private=$(jq -r .privateIpAddress "$work/vm.json")
+step=0
 remote() {
  local script=$1
- az vm run-command invoke -g "$rg" -n storage --command-id RunShellScript --scripts @"$script" > "$work/result.json"
- jq -r '.value[].message' "$work/result.json"
- jq -r '.value[].message' "$work/result.json" | grep -q '^LVMO_EXIT=0$'
+ step=$((step+1))
+ local job="lvmo-step-$step"
+ # Managed Run Command uses the singular script field. This also avoids an
+ # invoke --scripts serialization bug in Azure CLI 2.78.0.
+ az vm run-command create -g "$rg" --vm-name storage --name "$job" --location "$location" \
+  --script "$(cat "$script")" --timeout-in-seconds 5400 --async-execution false --output none
+ az vm run-command show -g "$rg" --vm-name storage --name "$job" --expand instanceView --query instanceView > "$work/result.json"
+ jq -r '.output, .error' "$work/result.json"
+ [[ $(jq -r .exitCode "$work/result.json") == 0 ]]
+ jq -r .output "$work/result.json" | grep -q '^LVMO_EXIT=0$'
 }
+
 [[ ${RELEASE_VERSION:-dev} =~ ^[A-Za-z0-9._-]+$ ]]
 cat > "$work/setup.sh" <<SETUP
 #!/bin/bash
@@ -83,7 +92,7 @@ kubectl --context "$context" create namespace lvmo-system
 installed=true
 if [[ -z ${RELEASE_VERSION:-} ]]; then
  mkdir -p "$work/image"
- cp bin/lvmo-driver bin/lvmo-metadata "$work/image/"
+ cp "$work/bin/lvmo-driver" "$work/bin/lvmo-metadata" "$work/image/"
  cat > "$work/image/Dockerfile" <<'DOCKER'
 FROM ubuntu:24.04
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nfs-common open-iscsi util-linux e2fsprogs xfsprogs ca-certificates && rm -rf /var/lib/apt/lists/*
