@@ -81,62 +81,209 @@ Ordinary filesystem snapshot restores remain the default. The optional block pat
 
 See [validated capabilities and limits](docs/validation.md) and [metadata deployment and semantics](docs/metadata.md) for TLS, RBAC, discovery, independent verification, and Kasten configuration boundaries.
 
-## End-to-end guide: Lima and Kind
+## Deploy on your laptop: Kind with a separate Lima storage VM
 
-This walkthrough uses the local source checkout on **macOS Apple Silicon**. The harness builds Linux ARM64 binaries, starts an Ubuntu Lima VM with 4 CPUs, 6 GiB RAM and a 40 GiB virtual disk, and runs Docker and a single-node Kind cluster inside it. Allow room for that virtual disk and container images. Internet access is needed to download packages and images.
+This walkthrough installs a released driver into **Kind on Docker Desktop**, with **Lima used only as the storage server**. Kubernetes pulls `michaelcourcy/lvmo-csi` from Docker Hub. You do not need Go, a source checkout, or the project's test scripts.
 
-### 1. Prepare the Mac
+```mermaid
+flowchart LR
+    K[Kind on Docker Desktop] -->|API TCP 50051| H[host.docker.internal]
+    K -->|NFS TCP 2049| H
+    H -->|Lima port forwarding| V[Lima storage VM: API + LVM + NFS]
+```
 
-Install Go 1.26.3 and Lima, and ensure `go`, `limactl`, `make`, and `tar` are on your PATH. For example, with Homebrew already installed, `brew install lima` installs Lima. Run the following commands from the repository root:
+The walkthrough creates an NFS RWX PVC, writes data, and restores a snapshot. It targets macOS Apple Silicon. The separate Docker Desktop/Lima topology has not yet been validated end to end; the earlier automated results used Kind inside Lima.
+
+**Release prerequisite:** `michaelcourcy/lvmo-csi:v0.1.0-alpha.1` is published on Docker Hub for Linux AMD64 and ARM64. The matching GitHub release containing the Linux API binary, checksums, and Helm chart is still pending. The full installation below requires those additional artifacts; the image alone does not install the storage-server API.
+
+### 1. Prepare your laptop and select a release
+
+Install and start Docker Desktop. With Homebrew installed:
 
 ```sh
-go version
+brew install lima kind kubectl helm
+mkdir -p ~/lvmo-demo
+cd ~/lvmo-demo
+export LVMO_VERSION=v0.1.0-alpha.1
+export LVMO_CHART_VERSION=0.1.0  # chart version listed in that release
+export LVMO_RELEASE_URL="https://github.com/michaelcourcy/lvmo-csi/releases/download/$LVMO_VERSION"
+export LVMO_VM=lvmo-storage
+export LVMO_CLUSTER=lvmo-demo
+export KUBECONFIG="$PWD/kubeconfig"
+
+docker context use desktop-linux
+docker info
 limactl --version
+kind version
+docker pull "michaelcourcy/lvmo-csi:$LVMO_VERSION"
+curl -fL "$LVMO_RELEASE_URL/lvmo-csi-$LVMO_CHART_VERSION.tgz" -o lvmo-csi.tgz
 ```
 
-The scripts install Linux Kind, kubectl, Helm, Docker image dependencies, and the storage packages inside the VM. Docker Desktop, a Docker Hub login, a published release, and host Kubernetes credentials are not required for this source-based workflow. The driver image is built inside Lima and loaded directly into Kind.
+The image pull checks release availability before creating infrastructure; Kind will pull the same image from Docker Hub when Helm installs the driver. Public images do not require registry credentials. The dedicated `KUBECONFIG` keeps this walkthrough separate from your usual clusters. Run subsequent commands in this same terminal unless instructed to enter the VM.
 
-### 2. Create and keep the test environment
+### 2. Create the storage VM
+
+Create this Lima configuration on the laptop:
 
 ```sh
-KEEP_TEST_ENV=true scripts/e2e.sh local sanity snapshots
+cat > storage.yaml <<'YAML'
+vmType: vz
+cpus: 2
+memory: 4GiB
+disk: 30GiB
+images:
+- location: https://cloud-images.ubuntu.com/releases/noble/release/ubuntu-24.04-server-cloudimg-arm64.img
+  arch: aarch64
+mounts: []
+containerd:
+  system: false
+  user: false
+portForwards:
+- guestPort: 50051
+  hostPort: 50051
+  hostIP: 127.0.0.1
+  static: true
+- guestPort: 2049
+  hostPort: 2049
+  hostIP: 127.0.0.1
+  static: true
+- guestPort: 3260
+  hostPort: 3260
+  hostIP: 127.0.0.1
+  static: true
+YAML
+limactl start --name="$LVMO_VM" --tty=false storage.yaml
+limactl shell "$LVMO_VM" sudo env LVMO_VERSION="$LVMO_VERSION" bash
 ```
 
-This builds the binaries and test executables, copies the checkout into `/tmp/lvmo-src` in a new `lvmo-test-<timestamp>` VM, and installs:
+**The next two steps run in this root shell inside Lima.** Kind remains on Docker Desktop; no Kubernetes components are installed in this VM.
 
-- Two 8 GiB loop-backed test disks, VGs `lvmo-test1` and `lvmo-test2`, each with a 6 GiB thin pool.
-- The storage API (`lvmo-api.service`) and a standalone CSI endpoint for sanity tests (`lvmo-driver.service`).
-- Kind cluster `lvmo-e2e`, the CSI Helm release, snapshot CRDs and snapshot controller.
-- StorageClasses `lvmo-nfs` and `lvmo-iscsi`, and VolumeSnapshotClass `lvmo-snapshots`.
+Lima forwards the three ports onto the Mac's loopback interface. Kind reaches them through Docker Desktop's `host.docker.internal` address. Ports 50051, 2049 and 3260 must be free on the Mac. This uses [Lima port forwarding](https://lima-vm.io/docs/config/port/) and [Docker Desktop host access](https://docs.docker.com/desktop/features/networking/networking-how-tos/); the guest's default private IP is not used by Kind.
 
-It then runs sanity and snapshot-restore tests. These storage setup scripts are intended only for this disposable VM. At the end, copy the name printed after `Retained test VM:` into a variable on your Mac:
+### 3. Install the storage API and prepare its pool
 
 ```sh
-LVMO_VM=lvmo-test-<timestamp>  # replace with the actual name
-limactl list
-limactl shell "$LVMO_VM" sudo -i
+set -e
+apt-get update
+apt-get install -y lvm2 thin-provisioning-tools nfs-kernel-server targetcli-fb xfsprogs curl ca-certificates
+modprobe dm_thin_pool
+modprobe target_core_mod
+modprobe iscsi_target_mod
+systemctl enable --now nfs-server
+
+mkdir -p /tmp/lvmo-release
+cd /tmp/lvmo-release
+LVMO_RELEASE_URL="https://github.com/michaelcourcy/lvmo-csi/releases/download/$LVMO_VERSION"
+curl -fLO "$LVMO_RELEASE_URL/lvmo-csi-linux-arm64"
+curl -fLO "$LVMO_RELEASE_URL/SHA256SUMS"
+awk '$2 == "lvmo-csi-linux-arm64"' SHA256SUMS > api.sha256
+test -s api.sha256
+sha256sum --check api.sha256
+install -m 0755 lvmo-csi-linux-arm64 /usr/local/bin/lvmo-csi
+
+mkdir -p /var/lib/lvmo-disks
+truncate -s 12G /var/lib/lvmo-disks/data.img
+LVMO_LOOP=$(losetup --find --show /var/lib/lvmo-disks/data.img)
+pvcreate "$LVMO_LOOP"
+vgcreate lvmo-data "$LVMO_LOOP"
+lvcreate --type thin-pool -L 10G --poolmetadatasize 128M -n lvmo-pool lvmo-data
+lvs
 ```
 
-**Run the commands in steps 3–6 in this root shell inside Lima.** The cluster kubeconfig is `/root/.kube/config`; the Mac's kubeconfig is unchanged. The VM is a disposable lab; delete and recreate it instead of relying on loop-device persistence across VM reboots.
+The loop-backed disk is a disposable demonstration disk created inside this VM. Run its creation commands once on the fresh VM. A real storage server should use a dedicated persistent disk or partition. This demo does not configure loop-device restoration after reboot; recreate the lab if you reboot it.
 
-### 3. Check the installation and backend address
+### 4. Start the API
+
+Still inside Lima:
 
 ```sh
-export KUBECONFIG=/root/.kube/config
-kubectl config current-context  # kind-lvmo-e2e
-kubectl get nodes
-kubectl -n lvmo-system get pods
-kubectl get sc lvmo-nfs lvmo-iscsi -o yaml
-kubectl get volumesnapshotclass lvmo-snapshots
+cat > /etc/systemd/system/lvmo-api.service <<'UNIT'
+[Unit]
+Description=LVMO storage API
+Wants=network-online.target
+After=network-online.target nfs-server.service
+[Service]
+ExecStart=/usr/local/bin/lvmo-csi --server=host.docker.internal -P 50051 lvmo-data
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now lvmo-api
 systemctl --no-pager status lvmo-api
-lvs -o vg_name,lv_name,lv_size,data_percent,metadata_percent
+exit
 ```
 
-Both StorageClasses should contain `parameters.endpoint: 192.168.5.15:50051`, selecting the API on this default Lima network, and `vg: lvmo-test1`. No global Helm API endpoint is needed. In a multi-VM deployment, create separate StorageClasses with each VM's reachable API address. NFS and iSCSI classes used for a cross-protocol snapshot restore must select the same endpoint and VG.
+**You are now back on the laptop.** `--server=host.docker.internal` is the data address the API returns to the CSI node plugin. It deliberately names the endpoint reachable from Docker Desktop, rather than the VM's private address. The StorageClass will separately specify the management API's port.
 
-The test chart sets `iscsiHostProc=/run/lvmo-host-proc` so nested Kind can use the outer VM's iSCSI daemon. This is a test setting; leave it empty on real Kubernetes nodes.
+### 5. Create Kind on Docker Desktop
 
-### 4. Write data to an NFS RWX PVC
+```sh
+kind create cluster --name "$LVMO_CLUSTER" --image kindest/node:v1.35.0 --wait 180s
+kubectl get nodes
+
+# Install NFS client tools in the Kind node.
+docker exec "$LVMO_CLUSTER-control-plane" sh -c 'apt-get update && apt-get install -y nfs-common'
+# Check the API route from that node before installing the driver.
+docker exec "$LVMO_CLUSTER-control-plane" getent hosts host.docker.internal
+docker exec "$LVMO_CLUSTER-control-plane" bash -c 'timeout 5 bash -c "echo > /dev/tcp/host.docker.internal/50051"'
+```
+
+The final command should exit successfully. If it fails, check `limactl list`, `limactl shell "$LVMO_VM" sudo systemctl status lvmo-api`, and local port conflicts before proceeding. NFS mounts also require NFS client support in the Docker Desktop Linux kernel; installing userspace tools cannot add a missing kernel feature.
+
+### 6. Install snapshots and the released CSI driver
+
+Run on the laptop:
+
+```sh
+export SNAPSHOTTER_VERSION=v8.5.0
+for resource in volumesnapshotclasses volumesnapshotcontents volumesnapshots; do
+  kubectl apply -f "https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/$SNAPSHOTTER_VERSION/client/config/crd/snapshot.storage.k8s.io_$resource.yaml"
+done
+for manifest in rbac-snapshot-controller.yaml setup-snapshot-controller.yaml; do
+  kubectl apply -f "https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/$SNAPSHOTTER_VERSION/deploy/kubernetes/snapshot-controller/$manifest"
+done
+kubectl -n kube-system rollout status deployment/snapshot-controller --timeout=180s
+
+kubectl create namespace lvmo-system
+kubectl label namespace lvmo-system pod-security.kubernetes.io/enforce=privileged
+helm upgrade --install lvmo ./lvmo-csi.tgz -n lvmo-system \
+  --set image.repository=michaelcourcy/lvmo-csi \
+  --set-string image.tag="$LVMO_VERSION" \
+  --set image.pullPolicy=Always \
+  --wait --timeout 5m
+kubectl -n lvmo-system get pods
+```
+
+Leave `apiEndpoint` and `iscsiHostProc` unset. Each StorageClass selects its storage server; this deployment does not use the nested-Kind iSCSI helper.
+
+```sh
+kubectl apply -f - <<'YAML'
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: lvmo-nfs
+provisioner: lvmo.csi.io
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+parameters:
+  endpoint: host.docker.internal:50051
+  protocol: nfs
+  vg: lvmo-data
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: lvmo-snapshots
+driver: lvmo.csi.io
+deletionPolicy: Delete
+YAML
+kubectl get sc lvmo-nfs -o yaml
+```
+
+For another storage VM, create another StorageClass pointing at its reachable API endpoint. With this forwarding layout, each additional VM needs distinct host ports and corresponding data-address configuration; production servers normally use their own directly reachable IPs or DNS names. Changing an existing StorageClass does not migrate existing volumes.
+
+### 7. Write data to an NFS RWX PVC
 
 ```sh
 kubectl create namespace lvmo-demo
@@ -182,7 +329,7 @@ PV=$(kubectl -n lvmo-demo get pvc data -o jsonpath='{.spec.volumeName}')
 kubectl get pv "$PV" -o jsonpath='{.spec.csi.volumeAttributes.endpoint}{"\n"}{.spec.csi.volumeHandle}{"\n"}'
 ```
 
-### 5. Snapshot, restore, and verify the data
+### 8. Snapshot, restore, and verify the data
 
 The demo has no active writer after the preceding `sync`. Applications with concurrent writes need their own quiescing or application-consistent backup procedure.
 
@@ -238,54 +385,50 @@ kubectl -n lvmo-demo exec reader -- cat /data/message
 kubectl -n lvmo-demo exec writer -- cat /data/message
 ```
 
-The restored PVC should contain `hello from lvmo`; the original should contain `changed after snapshot`. For an iSCSI filesystem variant, use `lvmo-iscsi` and `ReadWriteOnce` in both PVC manifests in a fresh demo namespace. The automated snapshot suite covers both protocols.
+The restored PVC should contain `hello from lvmo`; the original should contain `changed after snapshot`.
 
-### 6. Run backup and regression tests
+### 9. Troubleshoot and remove the installation
 
-First remove the demo so the test cleanup audit can require zero remaining volumes:
-
-```sh
-kubectl delete namespace lvmo-demo --wait=true --timeout=180s
-cd /tmp/lvmo-src
-bash scripts/run-suites.sh metadata
-# Optional longer Kubernetes upstream NFS suite:
-bash scripts/run-suites.sh external
-```
-
-The `metadata` suite tests full and incremental byte reconstruction for NFS, iSCSI filesystems, and raw block volumes; it also checks authentication, authorization, continuation, and discarded blocks. Its routing test creates a second API on port 50052 with a separate LVM pool, restarts the cluster driver, and verifies backup through that second backend. Both APIs run on the same VM in this test. This does not validate Kasten integration.
-
-Alternatively, from the **Mac repository root**, run all suites in a new VM that is removed automatically:
+Run these diagnostics from the laptop:
 
 ```sh
-scripts/e2e.sh local
-```
-
-A successful run ends with `Cleanup verified`. Read the final exit status as well as individual test results: NFS client delegations can delay physical deletion beyond the cleanup audit timeout, even when all functional tests pass. See [validation results and the known reclamation limitation](docs/validation.md).
-
-### 7. Inspect failures and clean up
-
-Inside Lima, useful diagnostics are:
-
-```sh
+kubectl -n lvmo-demo get pvc,pods,volumesnapshots
+kubectl -n lvmo-demo describe pod writer
 kubectl -n lvmo-system logs deployment/lvmo-controller -c driver --tail=100
 kubectl -n lvmo-system logs daemonset/lvmo-node -c driver --tail=100
 kubectl get events -A --sort-by=.lastTimestamp
-journalctl -u lvmo-api --no-pager -n 100
-jq '{volumes:(.volumes|length),snapshots:(.snapshots|length),deleting:(.deleting|length)}' /var/lib/lvmo/state.json
+limactl shell "$LVMO_VM" sudo journalctl -u lvmo-api --no-pager -n 100
+limactl shell "$LVMO_VM" sudo lvs
 ```
 
-The initial harness copies its reports to `.test/reports/<VM-name>.tgz` on the Mac. To collect reports from subsequent manual runs, then remove this lab, exit the root shell and run on the **Mac**:
+`ImagePullBackOff` requires checking the published tag and registry access. A pending PVC calls for checking the StorageClass API endpoint; a bound PVC with a pod stuck mounting calls for checking NFS connectivity on port 2049 and the node's kernel support. Docker Desktop/Lima forwarding and sleep/wake can affect connections; this is a laptop lab, not a highly available storage deployment.
+
+To remove the demo, delete its resources while the CSI driver and storage VM are still running:
 
 ```sh
-exit
-limactl shell "$LVMO_VM" sudo tar -czf /tmp/lvmo-reports.tgz -C /tmp/lvmo-src/.test reports
-limactl copy "$LVMO_VM:/tmp/lvmo-reports.tgz" ".test/reports/$LVMO_VM-manual.tgz"
-limactl delete --force "$LVMO_VM"
+kubectl delete namespace lvmo-demo --wait=true --timeout=180s
+kubectl get pv
+kubectl get volumesnapshotcontent
 ```
 
-Deleting this VM removes its Kind cluster, loop-backed storage, and all demo data. Use the exact test VM name; other Lima instances are unrelated to this walkthrough.
+Wait for this demo's PVs and snapshot contents to disappear. NFS delegations can delay physical LV reclamation after Kubernetes resources disappear; inspect `lvs` and the API logs if needed. See [the known reclamation limitation](docs/validation.md).
 
-## End-to-end tests
+Then remove the dedicated cluster and VM. This destroys all data in this lab:
+
+```sh
+helm uninstall lvmo -n lvmo-system
+kind delete cluster --name "$LVMO_CLUSTER"
+limactl delete --force "$LVMO_VM"
+unset KUBECONFIG
+```
+
+### About iSCSI and block backups on this topology
+
+The driver also supports iSCSI and NFS-snapshot-to-block backup clones. Those paths additionally require a working iSCSI initiator and kernel support on each Kind node. On macOS, that kernel belongs to Docker Desktop, not Lima; installing `iscsid` on the storage VM does not supply the initiator for Kind. This guide therefore demonstrates NFS and ordinary filesystem snapshot restores. iSCSI/CBT on this separate Docker Desktop/Lima layout remains unvalidated; do not interpret the nested-Lima test results as validation of this layout. See [metadata deployment](docs/metadata.md) for the backup service requirements.
+
+## Developer end-to-end tests
+
+These commands are for contributors. They build local code and use a different topology (Kind inside Lima); they are not part of the release-based deployment guide above.
 
 ```sh
 scripts/e2e.sh                         # local; all suites, one setup/teardown
