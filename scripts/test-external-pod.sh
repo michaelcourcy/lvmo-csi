@@ -12,7 +12,9 @@ k label namespace "$ns" pod-security.kubernetes.io/enforce=privileged
 k -n "$ns" create serviceaccount runner
 # Upstream e2e creates and inspects cluster-wide storage objects and namespaces.
 k create clusterrolebinding "$ns" --clusterrole=cluster-admin --serviceaccount="$ns:runner"
-k -n "$ns" create configmap driver-config --from-file=driver.yaml="$root/tests/external-nfs.yaml"
+version=${KUBERNETES_TEST_VERSION:-$(k version -o json | jq -r .serverVersion.gitVersion | sed -E 's/(v[0-9]+\.[0-9]+\.[0-9]+).*/\1/')}
+[[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid Kubernetes test version: $version" >&2; exit 1; }
+k -n "$ns" create configmap driver-config --from-file=driver.yaml="$root/tests/external-nfs.yaml" --from-literal=kubernetes-version="$version"
 k -n "$ns" apply -f - <<'YAML'
 apiVersion: v1
 kind: Pod
@@ -29,7 +31,8 @@ spec:
       apt-get update -qq
       apt-get install -y -qq curl ca-certificates
       case $(uname -m) in aarch64) arch=arm64;; *) arch=amd64;; esac
-      curl -fsSL https://dl.k8s.io/v1.35.0/kubernetes-test-linux-$arch.tar.gz | tar -xz -C /tmp kubernetes/test/bin/e2e.test
+      version=$(cat /config/kubernetes-version)
+      curl -fsSL https://dl.k8s.io/$version/kubernetes-test-linux-$arch.tar.gz | tar -xz -C /tmp kubernetes/test/bin/e2e.test
       /tmp/kubernetes/test/bin/e2e.test --storage.testdriver=/config/driver.yaml --ginkgo.focus='External.Storage.*lvmo.csi.io' --ginkgo.skip='\[Disruptive\]|\[Serial\]|\[Slow\]|performance|stress' --ginkgo.no-color --ginkgo.timeout=45m --report-dir=/reports
     securityContext: {runAsUser: 0}
     volumeMounts:
