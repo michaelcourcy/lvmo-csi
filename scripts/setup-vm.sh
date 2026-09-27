@@ -37,3 +37,10 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable --now lvmo-api lvmo-driver
+
+for attempt in $(seq 1 60); do
+ if [[ -S /tmp/lvmo-csi.sock ]] && (echo >/dev/tcp/127.0.0.1/50051) 2>/dev/null; then exit 0; fi
+ sleep 1
+done
+journalctl -u lvmo-api -u lvmo-driver --no-pager -n 40
+exit 1

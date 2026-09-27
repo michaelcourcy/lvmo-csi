@@ -25,7 +25,7 @@ jobs:
         context: .
         platforms: linux/amd64,linux/arm64
         push: true
-        tags: michaelcourcy/lvmo-csi:${{ github.ref_name }}
+        tags: ${{ secrets.DOCKERHUB_USERNAME }}/lvmo-csi:${{ github.ref_name }}
         build-args: VERSION=${{ github.ref_name }}
     - run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
       env:

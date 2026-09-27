@@ -137,3 +137,10 @@ REMOTE
   for mode in nfs iscsi-filesystem iscsi-block; do TEST_SOURCE_MODE="$mode" bash "$root/scripts/test-metadata.sh"; done;;
  esac
 done
+
+# Verify physical storage reclamation before removing the disposable server.
+{
+ cat "$root/scripts/check-cleanup.sh"
+ echo 'echo LVMO_EXIT=0'
+} > "$work/audit.sh"
+remote "$work/audit.sh"

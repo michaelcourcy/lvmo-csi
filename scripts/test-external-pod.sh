@@ -35,6 +35,11 @@ spec:
     volumeMounts:
     - {name: config, mountPath: /config}
     - {name: reports, mountPath: /reports}
+  - name: reports
+    image: ubuntu:24.04
+    command: [sleep, "3600"]
+    volumeMounts:
+    - {name: reports, mountPath: /reports}
   volumes:
   - name: config
     configMap: {name: driver-config}
@@ -45,5 +50,12 @@ if [[ ${OPENSHIFT:-false} == true ]]; then
  oc --context "$context" adm policy add-scc-to-user privileged -z runner -n "$ns"
 fi
 k -n "$ns" wait --for=condition=Ready pod/runner --timeout=180s
-k -n "$ns" logs -f runner
-[[ $(k -n "$ns" get pod runner -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}') == 0 ]]
+k -n "$ns" logs -f runner -c runner
+mkdir -p "$root/.test/reports/azure-external"
+k -n "$ns" cp -c reports runner:/reports/. "$root/.test/reports/azure-external"
+for attempt in $(seq 1 20); do
+ result=$(k -n "$ns" get pod runner -o jsonpath='{.status.containerStatuses[?(@.name=="runner")].state.terminated.exitCode}')
+ [[ -z $result ]] || break
+ sleep 1
+done
+[[ $result == 0 ]]
