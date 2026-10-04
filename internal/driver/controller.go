@@ -13,10 +13,23 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 	"io"
 	"strconv"
+	"strings"
 	"time"
 )
 
 const Name = "lvmo.csi.io"
+
+// NodeID carries the node's iSCSI initiator name, possibly empty, so that the
+// controller can grant that node access to a target: lvmo:<node>:<initiator>.
+func NodeID(node, initiator string) string { return "lvmo:" + node + ":" + initiator }
+func parseNodeID(id string) (node, initiator string, ok bool) {
+	rest, ok := strings.CutPrefix(id, "lvmo:")
+	if !ok {
+		return "", "", false
+	}
+	node, initiator, ok = strings.Cut(rest, ":")
+	return node, initiator, ok && node != ""
+}
 
 type Driver struct {
 	csi.UnimplementedIdentityServer
@@ -169,10 +182,52 @@ func (d *Driver) ValidateVolumeCapabilities(ctx context.Context, r *csi.Validate
 }
 func (d *Driver) ControllerGetCapabilities(context.Context, *csi.ControllerGetCapabilitiesRequest) (*csi.ControllerGetCapabilitiesResponse, error) {
 	out := &csi.ControllerGetCapabilitiesResponse{}
-	for _, t := range []csi.ControllerServiceCapability_RPC_Type{csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME, csi.ControllerServiceCapability_RPC_LIST_VOLUMES, csi.ControllerServiceCapability_RPC_GET_CAPACITY, csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT, csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS, csi.ControllerServiceCapability_RPC_CLONE_VOLUME, csi.ControllerServiceCapability_RPC_EXPAND_VOLUME, csi.ControllerServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER} {
+	for _, t := range []csi.ControllerServiceCapability_RPC_Type{csi.ControllerServiceCapability_RPC_CREATE_DELETE_VOLUME, csi.ControllerServiceCapability_RPC_LIST_VOLUMES, csi.ControllerServiceCapability_RPC_GET_CAPACITY, csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT, csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS, csi.ControllerServiceCapability_RPC_CLONE_VOLUME, csi.ControllerServiceCapability_RPC_EXPAND_VOLUME, csi.ControllerServiceCapability_RPC_SINGLE_NODE_MULTI_WRITER, csi.ControllerServiceCapability_RPC_PUBLISH_UNPUBLISH_VOLUME} {
 		out.Capabilities = append(out.Capabilities, &csi.ControllerServiceCapability{Type: &csi.ControllerServiceCapability_Rpc{Rpc: &csi.ControllerServiceCapability_RPC{Type: t}}})
 	}
 	return out, nil
+}
+
+// ControllerPublishVolume grants the node's initiator access to an iSCSI target.
+// NFS volumes need no attach step and succeed unchanged.
+func (d *Driver) ControllerPublishVolume(ctx context.Context, r *csi.ControllerPublishVolumeRequest) (*csi.ControllerPublishVolumeResponse, error) {
+	if r.VolumeId == "" || r.NodeId == "" || r.VolumeCapability == nil {
+		return nil, status.Error(codes.InvalidArgument, "volume, node, and capability required")
+	}
+	_, initiator, ok := parseNodeID(r.NodeId)
+	if !ok {
+		return nil, status.Error(codes.NotFound, "node not found")
+	}
+	v, e := d.API.GetVolume(ctx, &pb.ID{Id: r.VolumeId})
+	if e != nil {
+		return nil, e
+	}
+	if e = validate([]*csi.VolumeCapability{r.VolumeCapability}, v.Protocol); e != nil {
+		return nil, e
+	}
+	if _, e = d.API.PublishVolume(ctx, &pb.VolumePublish{VolumeId: r.VolumeId, NodeId: r.NodeId, Initiator: initiator}); e != nil {
+		return nil, e
+	}
+	return &csi.ControllerPublishVolumeResponse{}, nil
+}
+
+// ControllerUnpublishVolume revokes the node at the target, which also closes its
+// sessions. Kubernetes calls it after a confirmed node failure to fence the node.
+func (d *Driver) ControllerUnpublishVolume(ctx context.Context, r *csi.ControllerUnpublishVolumeRequest) (*csi.ControllerUnpublishVolumeResponse, error) {
+	if r.VolumeId == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume required")
+	}
+	if _, _, ok := parseNodeID(r.NodeId); r.NodeId != "" && !ok {
+		return &csi.ControllerUnpublishVolumeResponse{}, nil
+	}
+	_, e := d.API.UnpublishVolume(ctx, &pb.VolumePublish{VolumeId: r.VolumeId, NodeId: r.NodeId})
+	if status.Code(e) == codes.NotFound {
+		e = nil
+	}
+	if e != nil {
+		return nil, e
+	}
+	return &csi.ControllerUnpublishVolumeResponse{}, nil
 }
 func page(token string, maxEntries int32, total int) (int, int, string, error) {
 	start := 0

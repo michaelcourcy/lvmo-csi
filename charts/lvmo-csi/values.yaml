@@ -15,9 +15,17 @@ metadata:
   caCert: ""
 sidecars:
   provisioner: registry.k8s.io/sig-storage/csi-provisioner:v6.0.0
+  attacher: registry.k8s.io/sig-storage/csi-attacher:v4.13.0
   snapshotter: registry.k8s.io/sig-storage/csi-snapshotter:v8.5.0
   resizer: registry.k8s.io/sig-storage/csi-resizer:v2.0.0
   registrar: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.15.0
 
 # Only for nested Kind tests; leave empty on real Kubernetes nodes.
 iscsiHostProc: ""
+# Move workloads off a failed node without an out-of-service taint. A node is
+# declared dead when Kubernetes reports it not Ready and its node plugin has
+# sent no heartbeat to the storage servers, both for `timeout`. It is fenced at
+# the storage servers before its pods using lvmo volumes are force-deleted.
+failover:
+  enabled: true
+  timeout: 120s

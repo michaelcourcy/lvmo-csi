@@ -4,6 +4,15 @@ option go_package = "github.com/michaelcourcy/lvmo-csi/api/v1;storage";
 service Storage {
   rpc AcquireVolume(VolumeLease) returns (Empty);
   rpc ReleaseVolume(VolumeLease) returns (Empty);
+  // PublishVolume allows one node's iSCSI initiator to reach a volume's target;
+  // UnpublishVolume revokes it and closes that initiator's sessions.
+  rpc PublishVolume(VolumePublish) returns (Empty);
+  rpc UnpublishVolume(VolumePublish) returns (Empty);
+  // Heartbeat records that a node plugin can reach this server. FenceNode
+  // revokes a node from every target, but only after it has been silent for
+  // silence_seconds; it returns the volumes the node lost.
+  rpc Heartbeat(NodeHeartbeat) returns (Empty);
+  rpc FenceNode(NodeFence) returns (FencedVolumes);
  rpc CreateVolume(CreateVolumeRequest) returns (Volume);
  rpc GetVolume(ID) returns (Volume);
  rpc DeleteVolume(ID) returns (Empty);
@@ -31,3 +40,10 @@ message Range { int64 offset = 1; int64 length = 2; }
 message Ranges { int64 capacity = 1; repeated Range ranges = 2; }
 
 message VolumeLease { string volume_id = 1; string node_id = 2; }
+// An empty node_id in UnpublishVolume revokes every node.
+message VolumePublish { string volume_id = 1; string node_id = 2; string initiator = 3; }
+message NodeHeartbeat { string node_id = 1; }
+// node_name fences every lvmo:<node_name>:<initiator> ID; it does not depend on
+// the node's CSINode registration, which can be missing.
+message NodeFence { string node_id = 1; int64 silence_seconds = 2; string node_name = 3; }
+message FencedVolumes { repeated string volume_ids = 1; }

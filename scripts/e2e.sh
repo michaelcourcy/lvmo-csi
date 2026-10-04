@@ -4,10 +4,9 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 environment=local
 if [[ ${1:-} == local || ${1:-} == azure ]]; then environment=$1; shift; fi
-for suite in "$@"; do
- case $suite in sanity|external|snapshots|metadata) :;; *) echo "Usage: $0 [local|azure] [sanity external snapshots metadata]" >&2; exit 2;; esac
-done
 if [[ $environment == azure ]]; then exec bash "$root/scripts/e2e-azure.sh" "$@"; fi
+# Scenario ids, groups or legacy suite names; resolved before creating anything.
+selected=$(bash "$root/scripts/run-scenarios.sh" --resolve "$@") || { echo "Usage: $0 [local|azure] [scenario|group|suite ...]" >&2; exit 2; }
 for tool in limactl go tar; do command -v "$tool" >/dev/null; done
 vm="lvmo-test-$(date +%s)"
 mkdir -p .test/reports bin
@@ -38,4 +37,5 @@ limactl shell "$vm" sudo mkdir -p /tmp/lvmo-src
 limactl shell "$vm" sudo tar -xzf /tmp/lvmo-src.tgz -C /tmp/lvmo-src
 limactl shell "$vm" sudo env RELEASE_VERSION="${RELEASE_VERSION:-}" bash /tmp/lvmo-src/scripts/setup-vm.sh
 limactl shell "$vm" sudo env RELEASE_VERSION="${RELEASE_VERSION:-}" bash /tmp/lvmo-src/scripts/setup-kind.sh
-limactl shell "$vm" sudo bash /tmp/lvmo-src/scripts/run-suites.sh "$@"
+# shellcheck disable=SC2086 # one argument per scenario id
+limactl shell "$vm" sudo bash /tmp/lvmo-src/scripts/run-scenarios.sh $selected

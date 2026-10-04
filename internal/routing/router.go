@@ -411,6 +411,73 @@ func (r *Router) ReleaseVolume(ctx context.Context, request *pb.VolumeLease, opt
 	}
 	return c.ReleaseVolume(ctx, &pb.VolumeLease{VolumeId: id, NodeId: request.NodeId}, opts...)
 }
+func (r *Router) PublishVolume(ctx context.Context, request *pb.VolumePublish, opts ...grpc.CallOption) (*pb.Empty, error) {
+	endpoint, id, err := r.route(request.VolumeId)
+	if err != nil {
+		return nil, err
+	}
+	c, err := r.client(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	return c.PublishVolume(ctx, &pb.VolumePublish{VolumeId: id, NodeId: request.NodeId, Initiator: request.Initiator}, opts...)
+}
+func (r *Router) UnpublishVolume(ctx context.Context, request *pb.VolumePublish, opts ...grpc.CallOption) (*pb.Empty, error) {
+	endpoint, id, err := r.route(request.VolumeId)
+	if err != nil {
+		return nil, err
+	}
+	c, err := r.client(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	return c.UnpublishVolume(ctx, &pb.VolumePublish{VolumeId: id, NodeId: request.NodeId, Initiator: request.Initiator}, opts...)
+}
+
+// Heartbeat reaches every known server, so that each one can tell whether the
+// node is alive. It reports the first failure after trying them all.
+func (r *Router) Heartbeat(ctx context.Context, request *pb.NodeHeartbeat, opts ...grpc.CallOption) (*pb.Empty, error) {
+	endpoints, err := r.endpoints(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var first error
+	for _, endpoint := range endpoints {
+		c, err := r.client(endpoint)
+		if err == nil {
+			_, err = c.Heartbeat(ctx, request, opts...)
+		}
+		if err != nil && first == nil {
+			first = fmt.Errorf("%s: %w", endpoint, err)
+		}
+	}
+	return &pb.Empty{}, first
+}
+
+// FenceNode fences the node on every known server. It fails if any server
+// still hears the node or cannot be reached: the node is then not known to be
+// cut off everywhere.
+func (r *Router) FenceNode(ctx context.Context, request *pb.NodeFence, opts ...grpc.CallOption) (*pb.FencedVolumes, error) {
+	endpoints, err := r.endpoints(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := &pb.FencedVolumes{}
+	for _, endpoint := range endpoints {
+		c, err := r.client(endpoint)
+		if err != nil {
+			return nil, err
+		}
+		fenced, err := c.FenceNode(ctx, request, opts...)
+		if err != nil {
+			return nil, status.Errorf(status.Code(err), "%s: %s", endpoint, status.Convert(err).Message())
+		}
+		for _, id := range fenced.VolumeIds {
+			out.VolumeIds = append(out.VolumeIds, Encode(endpoint, id))
+		}
+	}
+	return out, nil
+}
 func (r *Router) Metadata(ctx context.Context, request *pb.MetadataRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[pb.Ranges], error) {
 	endpoint, id, err := r.route(request.Snapshot)
 	if err != nil {

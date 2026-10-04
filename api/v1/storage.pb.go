@@ -961,6 +961,217 @@ func (x *VolumeLease) GetNodeId() string {
 	return ""
 }
 
+// An empty node_id in UnpublishVolume revokes every node.
+type VolumePublish struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	VolumeId      string                 `protobuf:"bytes,1,opt,name=volume_id,json=volumeId,proto3" json:"volume_id,omitempty"`
+	NodeId        string                 `protobuf:"bytes,2,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	Initiator     string                 `protobuf:"bytes,3,opt,name=initiator,proto3" json:"initiator,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *VolumePublish) Reset() {
+	*x = VolumePublish{}
+	mi := &file_api_v1_storage_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *VolumePublish) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*VolumePublish) ProtoMessage() {}
+
+func (x *VolumePublish) ProtoReflect() protoreflect.Message {
+	mi := &file_api_v1_storage_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use VolumePublish.ProtoReflect.Descriptor instead.
+func (*VolumePublish) Descriptor() ([]byte, []int) {
+	return file_api_v1_storage_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *VolumePublish) GetVolumeId() string {
+	if x != nil {
+		return x.VolumeId
+	}
+	return ""
+}
+
+func (x *VolumePublish) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *VolumePublish) GetInitiator() string {
+	if x != nil {
+		return x.Initiator
+	}
+	return ""
+}
+
+type NodeHeartbeat struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NodeId        string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *NodeHeartbeat) Reset() {
+	*x = NodeHeartbeat{}
+	mi := &file_api_v1_storage_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeHeartbeat) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeHeartbeat) ProtoMessage() {}
+
+func (x *NodeHeartbeat) ProtoReflect() protoreflect.Message {
+	mi := &file_api_v1_storage_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeHeartbeat.ProtoReflect.Descriptor instead.
+func (*NodeHeartbeat) Descriptor() ([]byte, []int) {
+	return file_api_v1_storage_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *NodeHeartbeat) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+// node_name fences every lvmo:<node_name>:<initiator> ID; it does not depend on
+// the node's CSINode registration, which can be missing.
+type NodeFence struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	NodeId         string                 `protobuf:"bytes,1,opt,name=node_id,json=nodeId,proto3" json:"node_id,omitempty"`
+	SilenceSeconds int64                  `protobuf:"varint,2,opt,name=silence_seconds,json=silenceSeconds,proto3" json:"silence_seconds,omitempty"`
+	NodeName       string                 `protobuf:"bytes,3,opt,name=node_name,json=nodeName,proto3" json:"node_name,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *NodeFence) Reset() {
+	*x = NodeFence{}
+	mi := &file_api_v1_storage_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *NodeFence) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*NodeFence) ProtoMessage() {}
+
+func (x *NodeFence) ProtoReflect() protoreflect.Message {
+	mi := &file_api_v1_storage_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use NodeFence.ProtoReflect.Descriptor instead.
+func (*NodeFence) Descriptor() ([]byte, []int) {
+	return file_api_v1_storage_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *NodeFence) GetNodeId() string {
+	if x != nil {
+		return x.NodeId
+	}
+	return ""
+}
+
+func (x *NodeFence) GetSilenceSeconds() int64 {
+	if x != nil {
+		return x.SilenceSeconds
+	}
+	return 0
+}
+
+func (x *NodeFence) GetNodeName() string {
+	if x != nil {
+		return x.NodeName
+	}
+	return ""
+}
+
+type FencedVolumes struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	VolumeIds     []string               `protobuf:"bytes,1,rep,name=volume_ids,json=volumeIds,proto3" json:"volume_ids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FencedVolumes) Reset() {
+	*x = FencedVolumes{}
+	mi := &file_api_v1_storage_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FencedVolumes) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FencedVolumes) ProtoMessage() {}
+
+func (x *FencedVolumes) ProtoReflect() protoreflect.Message {
+	mi := &file_api_v1_storage_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FencedVolumes.ProtoReflect.Descriptor instead.
+func (*FencedVolumes) Descriptor() ([]byte, []int) {
+	return file_api_v1_storage_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *FencedVolumes) GetVolumeIds() []string {
+	if x != nil {
+		return x.VolumeIds
+	}
+	return nil
+}
+
 var File_api_v1_storage_proto protoreflect.FileDescriptor
 
 const file_api_v1_storage_proto_rawDesc = "" +
@@ -1038,10 +1249,27 @@ const file_api_v1_storage_proto_rawDesc = "" +
 	"\x06ranges\x18\x02 \x03(\v2\x0e.lvmo.v1.RangeR\x06ranges\"C\n" +
 	"\vVolumeLease\x12\x1b\n" +
 	"\tvolume_id\x18\x01 \x01(\tR\bvolumeId\x12\x17\n" +
-	"\anode_id\x18\x02 \x01(\tR\x06nodeId2\x90\x05\n" +
+	"\anode_id\x18\x02 \x01(\tR\x06nodeId\"c\n" +
+	"\rVolumePublish\x12\x1b\n" +
+	"\tvolume_id\x18\x01 \x01(\tR\bvolumeId\x12\x17\n" +
+	"\anode_id\x18\x02 \x01(\tR\x06nodeId\x12\x1c\n" +
+	"\tinitiator\x18\x03 \x01(\tR\tinitiator\"(\n" +
+	"\rNodeHeartbeat\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\"j\n" +
+	"\tNodeFence\x12\x17\n" +
+	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12'\n" +
+	"\x0fsilence_seconds\x18\x02 \x01(\x03R\x0esilenceSeconds\x12\x1b\n" +
+	"\tnode_name\x18\x03 \x01(\tR\bnodeName\".\n" +
+	"\rFencedVolumes\x12\x1d\n" +
+	"\n" +
+	"volume_ids\x18\x01 \x03(\tR\tvolumeIds2\xf2\x06\n" +
 	"\aStorage\x125\n" +
 	"\rAcquireVolume\x12\x14.lvmo.v1.VolumeLease\x1a\x0e.lvmo.v1.Empty\x125\n" +
-	"\rReleaseVolume\x12\x14.lvmo.v1.VolumeLease\x1a\x0e.lvmo.v1.Empty\x12=\n" +
+	"\rReleaseVolume\x12\x14.lvmo.v1.VolumeLease\x1a\x0e.lvmo.v1.Empty\x127\n" +
+	"\rPublishVolume\x12\x16.lvmo.v1.VolumePublish\x1a\x0e.lvmo.v1.Empty\x129\n" +
+	"\x0fUnpublishVolume\x12\x16.lvmo.v1.VolumePublish\x1a\x0e.lvmo.v1.Empty\x123\n" +
+	"\tHeartbeat\x12\x16.lvmo.v1.NodeHeartbeat\x1a\x0e.lvmo.v1.Empty\x127\n" +
+	"\tFenceNode\x12\x12.lvmo.v1.NodeFence\x1a\x16.lvmo.v1.FencedVolumes\x12=\n" +
 	"\fCreateVolume\x12\x1c.lvmo.v1.CreateVolumeRequest\x1a\x0f.lvmo.v1.Volume\x12)\n" +
 	"\tGetVolume\x12\v.lvmo.v1.ID\x1a\x0f.lvmo.v1.Volume\x12+\n" +
 	"\fDeleteVolume\x12\v.lvmo.v1.ID\x1a\x0e.lvmo.v1.Empty\x127\n" +
@@ -1065,7 +1293,7 @@ func file_api_v1_storage_proto_rawDescGZIP() []byte {
 	return file_api_v1_storage_proto_rawDescData
 }
 
-var file_api_v1_storage_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
+var file_api_v1_storage_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_api_v1_storage_proto_goTypes = []any{
 	(*Empty)(nil),               // 0: lvmo.v1.Empty
 	(*ID)(nil),                  // 1: lvmo.v1.ID
@@ -1082,6 +1310,10 @@ var file_api_v1_storage_proto_goTypes = []any{
 	(*Range)(nil),               // 12: lvmo.v1.Range
 	(*Ranges)(nil),              // 13: lvmo.v1.Ranges
 	(*VolumeLease)(nil),         // 14: lvmo.v1.VolumeLease
+	(*VolumePublish)(nil),       // 15: lvmo.v1.VolumePublish
+	(*NodeHeartbeat)(nil),       // 16: lvmo.v1.NodeHeartbeat
+	(*NodeFence)(nil),           // 17: lvmo.v1.NodeFence
+	(*FencedVolumes)(nil),       // 18: lvmo.v1.FencedVolumes
 }
 var file_api_v1_storage_proto_depIdxs = []int32{
 	3,  // 0: lvmo.v1.Volumes.volumes:type_name -> lvmo.v1.Volume
@@ -1089,30 +1321,38 @@ var file_api_v1_storage_proto_depIdxs = []int32{
 	12, // 2: lvmo.v1.Ranges.ranges:type_name -> lvmo.v1.Range
 	14, // 3: lvmo.v1.Storage.AcquireVolume:input_type -> lvmo.v1.VolumeLease
 	14, // 4: lvmo.v1.Storage.ReleaseVolume:input_type -> lvmo.v1.VolumeLease
-	2,  // 5: lvmo.v1.Storage.CreateVolume:input_type -> lvmo.v1.CreateVolumeRequest
-	1,  // 6: lvmo.v1.Storage.GetVolume:input_type -> lvmo.v1.ID
-	1,  // 7: lvmo.v1.Storage.DeleteVolume:input_type -> lvmo.v1.ID
-	5,  // 8: lvmo.v1.Storage.ExpandVolume:input_type -> lvmo.v1.ExpandRequest
-	0,  // 9: lvmo.v1.Storage.ListVolumes:input_type -> lvmo.v1.Empty
-	6,  // 10: lvmo.v1.Storage.CreateSnapshot:input_type -> lvmo.v1.SnapshotRequest
-	1,  // 11: lvmo.v1.Storage.DeleteSnapshot:input_type -> lvmo.v1.ID
-	0,  // 12: lvmo.v1.Storage.ListSnapshots:input_type -> lvmo.v1.Empty
-	9,  // 13: lvmo.v1.Storage.GetCapacity:input_type -> lvmo.v1.CapacityRequest
-	11, // 14: lvmo.v1.Storage.Metadata:input_type -> lvmo.v1.MetadataRequest
-	0,  // 15: lvmo.v1.Storage.AcquireVolume:output_type -> lvmo.v1.Empty
-	0,  // 16: lvmo.v1.Storage.ReleaseVolume:output_type -> lvmo.v1.Empty
-	3,  // 17: lvmo.v1.Storage.CreateVolume:output_type -> lvmo.v1.Volume
-	3,  // 18: lvmo.v1.Storage.GetVolume:output_type -> lvmo.v1.Volume
-	0,  // 19: lvmo.v1.Storage.DeleteVolume:output_type -> lvmo.v1.Empty
-	3,  // 20: lvmo.v1.Storage.ExpandVolume:output_type -> lvmo.v1.Volume
-	4,  // 21: lvmo.v1.Storage.ListVolumes:output_type -> lvmo.v1.Volumes
-	7,  // 22: lvmo.v1.Storage.CreateSnapshot:output_type -> lvmo.v1.Snapshot
-	0,  // 23: lvmo.v1.Storage.DeleteSnapshot:output_type -> lvmo.v1.Empty
-	8,  // 24: lvmo.v1.Storage.ListSnapshots:output_type -> lvmo.v1.Snapshots
-	10, // 25: lvmo.v1.Storage.GetCapacity:output_type -> lvmo.v1.Capacity
-	13, // 26: lvmo.v1.Storage.Metadata:output_type -> lvmo.v1.Ranges
-	15, // [15:27] is the sub-list for method output_type
-	3,  // [3:15] is the sub-list for method input_type
+	15, // 5: lvmo.v1.Storage.PublishVolume:input_type -> lvmo.v1.VolumePublish
+	15, // 6: lvmo.v1.Storage.UnpublishVolume:input_type -> lvmo.v1.VolumePublish
+	16, // 7: lvmo.v1.Storage.Heartbeat:input_type -> lvmo.v1.NodeHeartbeat
+	17, // 8: lvmo.v1.Storage.FenceNode:input_type -> lvmo.v1.NodeFence
+	2,  // 9: lvmo.v1.Storage.CreateVolume:input_type -> lvmo.v1.CreateVolumeRequest
+	1,  // 10: lvmo.v1.Storage.GetVolume:input_type -> lvmo.v1.ID
+	1,  // 11: lvmo.v1.Storage.DeleteVolume:input_type -> lvmo.v1.ID
+	5,  // 12: lvmo.v1.Storage.ExpandVolume:input_type -> lvmo.v1.ExpandRequest
+	0,  // 13: lvmo.v1.Storage.ListVolumes:input_type -> lvmo.v1.Empty
+	6,  // 14: lvmo.v1.Storage.CreateSnapshot:input_type -> lvmo.v1.SnapshotRequest
+	1,  // 15: lvmo.v1.Storage.DeleteSnapshot:input_type -> lvmo.v1.ID
+	0,  // 16: lvmo.v1.Storage.ListSnapshots:input_type -> lvmo.v1.Empty
+	9,  // 17: lvmo.v1.Storage.GetCapacity:input_type -> lvmo.v1.CapacityRequest
+	11, // 18: lvmo.v1.Storage.Metadata:input_type -> lvmo.v1.MetadataRequest
+	0,  // 19: lvmo.v1.Storage.AcquireVolume:output_type -> lvmo.v1.Empty
+	0,  // 20: lvmo.v1.Storage.ReleaseVolume:output_type -> lvmo.v1.Empty
+	0,  // 21: lvmo.v1.Storage.PublishVolume:output_type -> lvmo.v1.Empty
+	0,  // 22: lvmo.v1.Storage.UnpublishVolume:output_type -> lvmo.v1.Empty
+	0,  // 23: lvmo.v1.Storage.Heartbeat:output_type -> lvmo.v1.Empty
+	18, // 24: lvmo.v1.Storage.FenceNode:output_type -> lvmo.v1.FencedVolumes
+	3,  // 25: lvmo.v1.Storage.CreateVolume:output_type -> lvmo.v1.Volume
+	3,  // 26: lvmo.v1.Storage.GetVolume:output_type -> lvmo.v1.Volume
+	0,  // 27: lvmo.v1.Storage.DeleteVolume:output_type -> lvmo.v1.Empty
+	3,  // 28: lvmo.v1.Storage.ExpandVolume:output_type -> lvmo.v1.Volume
+	4,  // 29: lvmo.v1.Storage.ListVolumes:output_type -> lvmo.v1.Volumes
+	7,  // 30: lvmo.v1.Storage.CreateSnapshot:output_type -> lvmo.v1.Snapshot
+	0,  // 31: lvmo.v1.Storage.DeleteSnapshot:output_type -> lvmo.v1.Empty
+	8,  // 32: lvmo.v1.Storage.ListSnapshots:output_type -> lvmo.v1.Snapshots
+	10, // 33: lvmo.v1.Storage.GetCapacity:output_type -> lvmo.v1.Capacity
+	13, // 34: lvmo.v1.Storage.Metadata:output_type -> lvmo.v1.Ranges
+	19, // [19:35] is the sub-list for method output_type
+	3,  // [3:19] is the sub-list for method input_type
 	3,  // [3:3] is the sub-list for extension type_name
 	3,  // [3:3] is the sub-list for extension extendee
 	0,  // [0:3] is the sub-list for field type_name
@@ -1129,7 +1369,7 @@ func file_api_v1_storage_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_v1_storage_proto_rawDesc), len(file_api_v1_storage_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   15,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

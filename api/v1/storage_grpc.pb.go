@@ -19,18 +19,22 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	Storage_AcquireVolume_FullMethodName  = "/lvmo.v1.Storage/AcquireVolume"
-	Storage_ReleaseVolume_FullMethodName  = "/lvmo.v1.Storage/ReleaseVolume"
-	Storage_CreateVolume_FullMethodName   = "/lvmo.v1.Storage/CreateVolume"
-	Storage_GetVolume_FullMethodName      = "/lvmo.v1.Storage/GetVolume"
-	Storage_DeleteVolume_FullMethodName   = "/lvmo.v1.Storage/DeleteVolume"
-	Storage_ExpandVolume_FullMethodName   = "/lvmo.v1.Storage/ExpandVolume"
-	Storage_ListVolumes_FullMethodName    = "/lvmo.v1.Storage/ListVolumes"
-	Storage_CreateSnapshot_FullMethodName = "/lvmo.v1.Storage/CreateSnapshot"
-	Storage_DeleteSnapshot_FullMethodName = "/lvmo.v1.Storage/DeleteSnapshot"
-	Storage_ListSnapshots_FullMethodName  = "/lvmo.v1.Storage/ListSnapshots"
-	Storage_GetCapacity_FullMethodName    = "/lvmo.v1.Storage/GetCapacity"
-	Storage_Metadata_FullMethodName       = "/lvmo.v1.Storage/Metadata"
+	Storage_AcquireVolume_FullMethodName   = "/lvmo.v1.Storage/AcquireVolume"
+	Storage_ReleaseVolume_FullMethodName   = "/lvmo.v1.Storage/ReleaseVolume"
+	Storage_PublishVolume_FullMethodName   = "/lvmo.v1.Storage/PublishVolume"
+	Storage_UnpublishVolume_FullMethodName = "/lvmo.v1.Storage/UnpublishVolume"
+	Storage_Heartbeat_FullMethodName       = "/lvmo.v1.Storage/Heartbeat"
+	Storage_FenceNode_FullMethodName       = "/lvmo.v1.Storage/FenceNode"
+	Storage_CreateVolume_FullMethodName    = "/lvmo.v1.Storage/CreateVolume"
+	Storage_GetVolume_FullMethodName       = "/lvmo.v1.Storage/GetVolume"
+	Storage_DeleteVolume_FullMethodName    = "/lvmo.v1.Storage/DeleteVolume"
+	Storage_ExpandVolume_FullMethodName    = "/lvmo.v1.Storage/ExpandVolume"
+	Storage_ListVolumes_FullMethodName     = "/lvmo.v1.Storage/ListVolumes"
+	Storage_CreateSnapshot_FullMethodName  = "/lvmo.v1.Storage/CreateSnapshot"
+	Storage_DeleteSnapshot_FullMethodName  = "/lvmo.v1.Storage/DeleteSnapshot"
+	Storage_ListSnapshots_FullMethodName   = "/lvmo.v1.Storage/ListSnapshots"
+	Storage_GetCapacity_FullMethodName     = "/lvmo.v1.Storage/GetCapacity"
+	Storage_Metadata_FullMethodName        = "/lvmo.v1.Storage/Metadata"
 )
 
 // StorageClient is the client API for Storage service.
@@ -39,6 +43,15 @@ const (
 type StorageClient interface {
 	AcquireVolume(ctx context.Context, in *VolumeLease, opts ...grpc.CallOption) (*Empty, error)
 	ReleaseVolume(ctx context.Context, in *VolumeLease, opts ...grpc.CallOption) (*Empty, error)
+	// PublishVolume allows one node's iSCSI initiator to reach a volume's target;
+	// UnpublishVolume revokes it and closes that initiator's sessions.
+	PublishVolume(ctx context.Context, in *VolumePublish, opts ...grpc.CallOption) (*Empty, error)
+	UnpublishVolume(ctx context.Context, in *VolumePublish, opts ...grpc.CallOption) (*Empty, error)
+	// Heartbeat records that a node plugin can reach this server. FenceNode
+	// revokes a node from every target, but only after it has been silent for
+	// silence_seconds; it returns the volumes the node lost.
+	Heartbeat(ctx context.Context, in *NodeHeartbeat, opts ...grpc.CallOption) (*Empty, error)
+	FenceNode(ctx context.Context, in *NodeFence, opts ...grpc.CallOption) (*FencedVolumes, error)
 	CreateVolume(ctx context.Context, in *CreateVolumeRequest, opts ...grpc.CallOption) (*Volume, error)
 	GetVolume(ctx context.Context, in *ID, opts ...grpc.CallOption) (*Volume, error)
 	DeleteVolume(ctx context.Context, in *ID, opts ...grpc.CallOption) (*Empty, error)
@@ -73,6 +86,46 @@ func (c *storageClient) ReleaseVolume(ctx context.Context, in *VolumeLease, opts
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(Empty)
 	err := c.cc.Invoke(ctx, Storage_ReleaseVolume_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *storageClient) PublishVolume(ctx context.Context, in *VolumePublish, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, Storage_PublishVolume_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *storageClient) UnpublishVolume(ctx context.Context, in *VolumePublish, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, Storage_UnpublishVolume_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *storageClient) Heartbeat(ctx context.Context, in *NodeHeartbeat, opts ...grpc.CallOption) (*Empty, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(Empty)
+	err := c.cc.Invoke(ctx, Storage_Heartbeat_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *storageClient) FenceNode(ctx context.Context, in *NodeFence, opts ...grpc.CallOption) (*FencedVolumes, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FencedVolumes)
+	err := c.cc.Invoke(ctx, Storage_FenceNode_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -194,6 +247,15 @@ type Storage_MetadataClient = grpc.ServerStreamingClient[Ranges]
 type StorageServer interface {
 	AcquireVolume(context.Context, *VolumeLease) (*Empty, error)
 	ReleaseVolume(context.Context, *VolumeLease) (*Empty, error)
+	// PublishVolume allows one node's iSCSI initiator to reach a volume's target;
+	// UnpublishVolume revokes it and closes that initiator's sessions.
+	PublishVolume(context.Context, *VolumePublish) (*Empty, error)
+	UnpublishVolume(context.Context, *VolumePublish) (*Empty, error)
+	// Heartbeat records that a node plugin can reach this server. FenceNode
+	// revokes a node from every target, but only after it has been silent for
+	// silence_seconds; it returns the volumes the node lost.
+	Heartbeat(context.Context, *NodeHeartbeat) (*Empty, error)
+	FenceNode(context.Context, *NodeFence) (*FencedVolumes, error)
 	CreateVolume(context.Context, *CreateVolumeRequest) (*Volume, error)
 	GetVolume(context.Context, *ID) (*Volume, error)
 	DeleteVolume(context.Context, *ID) (*Empty, error)
@@ -219,6 +281,18 @@ func (UnimplementedStorageServer) AcquireVolume(context.Context, *VolumeLease) (
 }
 func (UnimplementedStorageServer) ReleaseVolume(context.Context, *VolumeLease) (*Empty, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ReleaseVolume not implemented")
+}
+func (UnimplementedStorageServer) PublishVolume(context.Context, *VolumePublish) (*Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PublishVolume not implemented")
+}
+func (UnimplementedStorageServer) UnpublishVolume(context.Context, *VolumePublish) (*Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UnpublishVolume not implemented")
+}
+func (UnimplementedStorageServer) Heartbeat(context.Context, *NodeHeartbeat) (*Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Heartbeat not implemented")
+}
+func (UnimplementedStorageServer) FenceNode(context.Context, *NodeFence) (*FencedVolumes, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method FenceNode not implemented")
 }
 func (UnimplementedStorageServer) CreateVolume(context.Context, *CreateVolumeRequest) (*Volume, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateVolume not implemented")
@@ -303,6 +377,78 @@ func _Storage_ReleaseVolume_Handler(srv interface{}, ctx context.Context, dec fu
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(StorageServer).ReleaseVolume(ctx, req.(*VolumeLease))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Storage_PublishVolume_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VolumePublish)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(StorageServer).PublishVolume(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Storage_PublishVolume_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(StorageServer).PublishVolume(ctx, req.(*VolumePublish))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Storage_UnpublishVolume_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(VolumePublish)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(StorageServer).UnpublishVolume(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Storage_UnpublishVolume_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(StorageServer).UnpublishVolume(ctx, req.(*VolumePublish))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Storage_Heartbeat_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(NodeHeartbeat)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(StorageServer).Heartbeat(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Storage_Heartbeat_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(StorageServer).Heartbeat(ctx, req.(*NodeHeartbeat))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Storage_FenceNode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(NodeFence)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(StorageServer).FenceNode(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Storage_FenceNode_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(StorageServer).FenceNode(ctx, req.(*NodeFence))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -494,6 +640,22 @@ var Storage_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReleaseVolume",
 			Handler:    _Storage_ReleaseVolume_Handler,
+		},
+		{
+			MethodName: "PublishVolume",
+			Handler:    _Storage_PublishVolume_Handler,
+		},
+		{
+			MethodName: "UnpublishVolume",
+			Handler:    _Storage_UnpublishVolume_Handler,
+		},
+		{
+			MethodName: "Heartbeat",
+			Handler:    _Storage_Heartbeat_Handler,
+		},
+		{
+			MethodName: "FenceNode",
+			Handler:    _Storage_FenceNode_Handler,
 		},
 		{
 			MethodName: "CreateVolume",

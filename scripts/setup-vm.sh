@@ -18,7 +18,8 @@ server=${STORAGE_SERVER:-$(ip -4 route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if
 cat > /etc/systemd/system/lvmo-api.service <<UNIT
 [Unit]
 Description=LVMO storage management
-After=network-online.target nfs-server.service
+Requires=lvmo-loop.service
+After=network-online.target nfs-server.service lvmo-loop.service
 [Service]
 ExecStart=/usr/local/bin/lvmo-csi --server=$server lvmo-test1 lvmo-test2
 Restart=on-failure

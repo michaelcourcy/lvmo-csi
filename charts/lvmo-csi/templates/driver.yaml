@@ -3,7 +3,9 @@ kind: CSIDriver
 metadata:
   name: lvmo.csi.io
 spec:
-  attachRequired: false
+  # iSCSI targets admit only the initiators of nodes the volume is attached to;
+  # detaching a failed node fences it. NFS volumes attach without doing anything.
+  attachRequired: true
   podInfoOnMount: true
   fsGroupPolicy: File
   volumeLifecycleModes: [Persistent]
@@ -26,14 +28,23 @@ rules:
   resources: [persistentvolumeclaims, persistentvolumeclaims/status]
   verbs: [get, list, watch, update, patch]
 - apiGroups: [""]
-  resources: [nodes, pods]
+  resources: [nodes]
   verbs: [get, list, watch]
+- apiGroups: [""]
+  resources: [pods]
+  verbs: [get, list, watch, delete]
 - apiGroups: [""]
   resources: [events]
   verbs: [get, list, watch, create, patch, update]
 - apiGroups: [storage.k8s.io]
-  resources: [storageclasses, csinodes, volumeattachments, volumeattributesclasses]
+  resources: [storageclasses, csinodes, volumeattributesclasses]
   verbs: [get, list, watch]
+- apiGroups: [storage.k8s.io]
+  resources: [volumeattachments]
+  verbs: [get, list, watch, update, patch]
+- apiGroups: [storage.k8s.io]
+  resources: [volumeattachments/status]
+  verbs: [patch]
 - apiGroups: [snapshot.storage.k8s.io]
   resources: [volumesnapshots, volumesnapshotclasses, volumesnapshotcontents]
   verbs: [get, list, watch, create, update, patch, delete]
@@ -84,14 +95,19 @@ spec:
       labels: {app: lvmo-controller}
     spec:
       serviceAccountName: lvmo-csi
+      # Leave a lost node quickly: failover runs in this pod and attach/detach
+      # needs its csi-attacher, so it must not wait the default 5 minutes.
+      tolerations:
+      - {key: node.kubernetes.io/unreachable, operator: Exists, effect: NoExecute, tolerationSeconds: 30}
+      - {key: node.kubernetes.io/not-ready, operator: Exists, effect: NoExecute, tolerationSeconds: 30}
       containers:
       - name: driver
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
-        args: ["--endpoint=unix:///csi/csi.sock", "--api-endpoint={{ .Values.apiEndpoint }}"]
+        args: ["--endpoint=unix:///csi/csi.sock", "--api-endpoint={{ .Values.apiEndpoint }}", "--failover-timeout={{ if .Values.failover.enabled }}{{ .Values.failover.timeout }}{{ else }}0{{ end }}"]
         volumeMounts:
         - {name: socket, mountPath: /csi}
-      {{- range $name, $image := dict "provisioner" .Values.sidecars.provisioner "snapshotter" .Values.sidecars.snapshotter "resizer" .Values.sidecars.resizer }}
+      {{- range $name, $image := dict "provisioner" .Values.sidecars.provisioner "attacher" .Values.sidecars.attacher "snapshotter" .Values.sidecars.snapshotter "resizer" .Values.sidecars.resizer }}
       - name: {{ $name }}
         image: {{ $image }}
         args: ["--csi-address=/csi/csi.sock", "--leader-election=true", "--timeout=120s"]

@@ -5,7 +5,7 @@ cd "$root"
 for tool in az kubectl oc helm ssh scp go jq; do command -v "$tool" >/dev/null; done
 context=$(kubectl config current-context)
 export KUBE_CONTEXT="$context" OPENSHIFT=true
-(( $# )) || set -- sanity external snapshots metadata
+selected=$(bash "$root/scripts/run-scenarios.sh" --resolve "$@")
 # Refuse to overwrite installations or resources that this run does not own.
 for resource in 'namespace/lvmo-system' 'csidriver/lvmo.csi.io' 'storageclass/lvmo-nfs' 'storageclass/lvmo-iscsi' 'volumesnapshotclass/lvmo-snapshots'; do
  if kubectl --context "$context" get "$resource" >/dev/null 2>&1; then echo "Already exists: $resource" >&2; exit 1; fi
@@ -119,41 +119,22 @@ export TEST_IMAGE="$image_repository:$image_tag"
 helm upgrade --install lvmo "$root/charts/lvmo-csi" --kube-context "$context" -n lvmo-system --set openshift=true --set image.repository="$image_repository" --set image.tag="$image_tag" --wait --timeout 5m
 API_ENDPOINT="$private:50051" bash "$root/scripts/install-storageclasses.sh"
 export API_ENDPOINT="$private:50051"
-for suite in "$@"; do
- case $suite in
- sanity)
-  cat > "$work/suite.sh" <<'REMOTE'
+# Scenarios that need the storage server's direct CSI endpoint run on the VM;
+# the others run here against the cluster. cleanup-audit comes last.
+remote_scenario() {
+ cat > "$work/suite.sh" <<REMOTE
 #!/bin/bash
-bash /tmp/lvmo-src/scripts/run-suites.sh sanity > /tmp/lvmo-sanity.log 2>&1
-result=$?
-tail -n 40 /tmp/lvmo-sanity.log
-echo LVMO_EXIT=$result
+CLEANUP_AUDIT=false bash /tmp/lvmo-src/scripts/run-scenarios.sh $1 > /tmp/lvmo-$1.log 2>&1
+result=\$?
+tail -n 80 /tmp/lvmo-$1.log
+echo LVMO_EXIT=\$result
 REMOTE
-  remote "$work/suite.sh";;
- snapshots) for sc in lvmo-nfs lvmo-iscsi; do STORAGE_CLASS="$sc" bash "$root/scripts/test-snapshots.sh"; done;;
- external) bash "$root/scripts/test-external-pod.sh";;
- metadata)
-  cat > "$work/suite.sh" <<'REMOTE'
-#!/bin/bash
-CSI_ENDPOINT=unix:///tmp/lvmo-csi.sock /tmp/lvmo-src/bin/integration.test -test.v -test.timeout=15m > /tmp/lvmo-backup.log 2>&1
-result=$?
-cat /tmp/lvmo-backup.log
-echo LVMO_EXIT=$result
-REMOTE
-  remote "$work/suite.sh"
-  bash "$root/scripts/enable-metadata.sh"
-  for mode in nfs iscsi-filesystem iscsi-block; do TEST_SOURCE_MODE="$mode" bash "$root/scripts/test-metadata.sh"; done;;
+ remote "$work/suite.sh"
+}
+for id in $selected; do
+ case $id in
+ csi-sanity|cbt-reconstruction-driver|failed-create-recovery|cleanup-audit) remote_scenario "$id";;
+ backend-routing) echo "Skipping backend-routing: it needs kubectl on the storage server (cluster-on-storage-server)" >&2;;
+ *) CLEANUP_AUDIT=false bash "$root/scripts/run-scenarios.sh" "$id";;
  esac
 done
-
-# Verify physical storage reclamation before removing the disposable server.
-{
- echo '#!/bin/bash'
- echo '('
- cat "$root/scripts/check-cleanup.sh"
- echo ')'
- echo 'result=$?'
- echo 'echo LVMO_EXIT=$result'
- echo 'exit "$result"'
-} > "$work/audit.sh"
-remote "$work/audit.sh"

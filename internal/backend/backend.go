@@ -54,6 +54,9 @@ type state struct {
 	Deleting          map[string]bool         `json:"deleting,omitempty"`
 	Volumes           map[string]*pb.Volume   `json:"volumes"`
 	Snapshots         map[string]*pb.Snapshot `json:"snapshots"`
+	// Attachments maps an iSCSI volume to the nodes allowed to reach it (node ID
+	// to initiator). A present entry, even empty, keeps the target in ACL mode.
+	Attachments map[string]map[string]string `json:"attachments,omitempty"`
 }
 type Backend struct {
 	pb.UnimplementedStorageServer
@@ -62,9 +65,15 @@ type Backend struct {
 	run        Runner
 	state      state
 	lastExport int64
+	// Heartbeats are kept in memory: after a restart every node gets a full
+	// timeout from the start time before it can be fenced.
+	heartbeats map[string]time.Time
+	started    time.Time
+	now        func() time.Time
 }
 
 var validName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.+-]{0,100}$`)
+var validInitiator = regexp.MustCompile(`^(iqn\.[0-9]{4}-[0-9]{2}\.[A-Za-z0-9.-]+(:[A-Za-z0-9.:_-]+)?|eui\.[0-9A-Fa-f]{16}|naa\.[0-9A-Fa-f]{16,32})$`)
 
 func New(cfg Config, run Runner) (*Backend, error) {
 	if cfg.Root == "" || !filepath.IsAbs(cfg.Root) || strings.ContainsAny(cfg.Root, " \n\t") {
@@ -93,7 +102,8 @@ func New(cfg Config, run Runner) (*Backend, error) {
 	if strings.ContainsAny(cfg.Clients, " \n\t()") {
 		return nil, fmt.Errorf("invalid NFS client selector")
 	}
-	b := &Backend{cfg: cfg, run: run, state: state{Volumes: map[string]*pb.Volume{}, Snapshots: map[string]*pb.Snapshot{}}}
+	b := &Backend{cfg: cfg, run: run, state: state{Volumes: map[string]*pb.Volume{}, Snapshots: map[string]*pb.Snapshot{}}, heartbeats: map[string]time.Time{}, now: time.Now}
+	b.started = b.now()
 	if err := os.MkdirAll(cfg.Root, 0700); err != nil {
 		return nil, err
 	}
@@ -109,6 +119,9 @@ func New(cfg Config, run Runner) (*Backend, error) {
 	}
 	if b.state.Owners == nil {
 		b.state.Owners = map[string]string{}
+	}
+	if b.state.Attachments == nil {
+		b.state.Attachments = map[string]map[string]string{}
 	}
 	if b.state.SnapshotOrder == nil {
 		b.state.SnapshotOrder = map[string]uint64{}
@@ -404,10 +417,202 @@ func (b *Backend) publish(ctx context.Context, v *pb.Volume) error {
 			return err
 		}
 	}
-	if err := b.cmd(ctx, "targetcli", target+"/tpg1", "set", "attribute", "authentication=0", "generate_node_acls=1", "demo_mode_write_protect=0", "cache_dynamic_acls=1"); err != nil {
+	if err := b.applyACL(ctx, v); err != nil {
 		return err
 	}
 	return b.cmd(ctx, "targetcli", "saveconfig")
+}
+
+// applyACL leaves a target open to any initiator until the volume is first
+// published to a node. From then on only published initiators may log in, and
+// deleting an initiator's ACL closes its sessions: this is how a node is fenced.
+func (b *Backend) applyACL(ctx context.Context, v *pb.Volume) error {
+	tpg := "/iscsi/" + v.Iqn + "/tpg1"
+	allowed, fenced := b.state.Attachments[v.Id]
+	if !fenced {
+		return b.cmd(ctx, "targetcli", tpg, "set", "attribute", "authentication=0", "generate_node_acls=1", "demo_mode_write_protect=0", "cache_dynamic_acls=1")
+	}
+	if err := b.cmd(ctx, "targetcli", tpg, "set", "attribute", "authentication=0", "generate_node_acls=0", "cache_dynamic_acls=0"); err != nil {
+		return err
+	}
+	want := map[string]bool{}
+	for _, initiator := range allowed {
+		want[initiator] = true
+	}
+	out, err := b.run.Run(ctx, "targetcli", tpg+"/acls", "ls")
+	if err != nil {
+		return err
+	}
+	present := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if f := strings.Fields(strings.TrimPrefix(strings.TrimSpace(line), "o- ")); len(f) > 0 && validInitiator.MatchString(f[0]) {
+			present[f[0]] = true
+		}
+	}
+	for initiator := range present {
+		if !want[initiator] {
+			if err := b.cmd(ctx, "targetcli", tpg+"/acls", "delete", initiator); err != nil {
+				return err
+			}
+		}
+	}
+	for initiator := range want {
+		if !present[initiator] {
+			if err := b.cmd(ctx, "targetcli", tpg+"/acls", "create", initiator); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// PublishVolume grants one node's initiator access to an iSCSI volume. Volumes
+// are single-node, so a second node is refused until the first is unpublished.
+func (b *Backend) PublishVolume(ctx context.Context, r *pb.VolumePublish) (*pb.Empty, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if r.VolumeId == "" || r.NodeId == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume and node required")
+	}
+	v := b.state.Volumes[r.VolumeId]
+	if v == nil || !v.Ready || b.state.Deleting[r.VolumeId] {
+		return nil, status.Error(codes.NotFound, "volume not found")
+	}
+	if v.Protocol != "iscsi" {
+		return &pb.Empty{}, nil
+	}
+	if !validInitiator.MatchString(r.Initiator) {
+		return nil, status.Error(codes.FailedPrecondition, "node has no usable iSCSI initiator name")
+	}
+	allowed, fenced := b.state.Attachments[v.Id]
+	for node := range allowed {
+		if node != r.NodeId {
+			return nil, status.Error(codes.FailedPrecondition, "iSCSI volume is published to another node")
+		}
+	}
+	previous, had := allowed[r.NodeId]
+	if !fenced {
+		allowed = map[string]string{}
+		b.state.Attachments[v.Id] = allowed
+	}
+	allowed[r.NodeId] = r.Initiator
+	if err := b.save(); err != nil {
+		if had {
+			allowed[r.NodeId] = previous
+		} else {
+			delete(allowed, r.NodeId)
+		}
+		if !fenced {
+			delete(b.state.Attachments, v.Id)
+		}
+		return nil, internal(err)
+	}
+	if err := b.applyACL(ctx, v); err != nil {
+		return nil, internal(err)
+	}
+	return &pb.Empty{}, internal(b.cmd(ctx, "targetcli", "saveconfig"))
+}
+
+func (b *Backend) Heartbeat(ctx context.Context, r *pb.NodeHeartbeat) (*pb.Empty, error) {
+	if r.NodeId == "" {
+		return nil, status.Error(codes.InvalidArgument, "node required")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.heartbeats[r.NodeId] = b.now()
+	return &pb.Empty{}, nil
+}
+
+// FenceNode revokes a node from every iSCSI target it is published to and
+// releases its ownership. The caller decides the node is dead; this server only
+// agrees if the node has not sent a heartbeat for the given silence.
+func (b *Backend) FenceNode(ctx context.Context, r *pb.NodeFence) (*pb.FencedVolumes, error) {
+	if (r.NodeId == "") == (r.NodeName == "") || r.SilenceSeconds <= 0 {
+		return nil, status.Error(codes.InvalidArgument, "one of node ID and node name, and silence required")
+	}
+	matches := func(id string) bool {
+		if r.NodeId != "" {
+			return id == r.NodeId
+		}
+		rest, ok := strings.CutPrefix(id, "lvmo:")
+		name, _, _ := strings.Cut(rest, ":")
+		return ok && name == r.NodeName
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	last := b.started
+	for id, seen := range b.heartbeats {
+		if matches(id) && seen.After(last) {
+			last = seen
+		}
+	}
+	if silent := b.now().Sub(last); silent < time.Duration(r.SilenceSeconds)*time.Second {
+		return nil, status.Errorf(codes.FailedPrecondition, "node was heard %s ago", silent.Round(time.Second))
+	}
+	out := &pb.FencedVolumes{}
+	for id, allowed := range b.state.Attachments {
+		for node := range allowed {
+			if matches(node) {
+				delete(allowed, node)
+				out.VolumeIds = append(out.VolumeIds, id)
+			}
+		}
+	}
+	for id, owner := range b.state.Owners {
+		if matches(owner) {
+			delete(b.state.Owners, id)
+			if _, listed := b.state.Attachments[id]; !listed {
+				out.VolumeIds = append(out.VolumeIds, id)
+			}
+		}
+	}
+	if len(out.VolumeIds) == 0 {
+		return out, nil
+	}
+	sort.Strings(out.VolumeIds)
+	if err := b.save(); err != nil {
+		return nil, internal(err)
+	}
+	for _, id := range out.VolumeIds {
+		if v := b.state.Volumes[id]; v != nil && v.Protocol == "iscsi" {
+			if err := b.applyACL(ctx, v); err != nil {
+				return nil, internal(err)
+			}
+		}
+	}
+	return out, internal(b.cmd(ctx, "targetcli", "saveconfig"))
+}
+
+// UnpublishVolume revokes a node, or every node when none is named. The
+// revoked node can no longer reach the target, so its staging ownership is
+// released too: this lets another node take over after a confirmed failure.
+func (b *Backend) UnpublishVolume(ctx context.Context, r *pb.VolumePublish) (*pb.Empty, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if r.VolumeId == "" {
+		return nil, status.Error(codes.InvalidArgument, "volume required")
+	}
+	v := b.state.Volumes[r.VolumeId]
+	allowed, fenced := b.state.Attachments[r.VolumeId]
+	if v == nil || v.Protocol != "iscsi" || !fenced {
+		return &pb.Empty{}, nil
+	}
+	for node := range allowed {
+		if r.NodeId == "" || node == r.NodeId {
+			delete(allowed, node)
+		}
+	}
+	if owner := b.state.Owners[v.Id]; owner != "" && (r.NodeId == "" || owner == r.NodeId) {
+		delete(b.state.Owners, v.Id)
+	}
+	// Persist first: a restart then reapplies the reduced ACL instead of the old one.
+	if err := b.save(); err != nil {
+		return nil, internal(err)
+	}
+	if err := b.applyACL(ctx, v); err != nil {
+		return nil, internal(err)
+	}
+	return &pb.Empty{}, internal(b.cmd(ctx, "targetcli", "saveconfig"))
 }
 func (b *Backend) GetVolume(ctx context.Context, r *pb.ID) (*pb.Volume, error) {
 	b.mu.Lock()
@@ -442,6 +647,9 @@ func (b *Backend) DeleteVolume(ctx context.Context, r *pb.ID) (*pb.Empty, error)
 	}
 	if b.state.Owners[r.Id] != "" {
 		return nil, status.Error(codes.FailedPrecondition, "volume is staged on a node")
+	}
+	if len(b.state.Attachments[r.Id]) > 0 {
+		return nil, status.Error(codes.FailedPrecondition, "volume is published to a node")
 	}
 	b.state.Deleting[r.Id] = true
 	if err := b.save(); err != nil {
@@ -503,6 +711,7 @@ func (b *Backend) DeleteVolume(ctx context.Context, r *pb.ID) (*pb.Empty, error)
 	}
 	delete(b.state.Volumes, r.Id)
 	delete(b.state.Deleting, r.Id)
+	delete(b.state.Attachments, r.Id)
 	return &pb.Empty{}, internal(b.save())
 }
 func (b *Backend) ExpandVolume(ctx context.Context, r *pb.ExpandRequest) (*pb.Volume, error) {
@@ -776,8 +985,10 @@ func (b *Backend) ReleaseVolume(ctx context.Context, r *pb.VolumeLease) (*pb.Emp
 	if r.VolumeId == "" || r.NodeId == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume and node required")
 	}
-	if owner := b.state.Owners[r.VolumeId]; owner != "" && owner != r.NodeId {
-		return nil, status.Error(codes.FailedPrecondition, "volume belongs to another node")
+	// Releasing a volume another node now owns changes nothing. This happens when
+	// a fenced node comes back and cleans up after its volume was taken over.
+	if owner := b.state.Owners[r.VolumeId]; owner != r.NodeId {
+		return &pb.Empty{}, nil
 	}
 	delete(b.state.Owners, r.VolumeId)
 	return &pb.Empty{}, internal(b.save())

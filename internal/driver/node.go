@@ -9,6 +9,7 @@ import (
 	"golang.org/x/sys/unix"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +45,24 @@ func run(ctx context.Context, cmd string, args ...string) error {
 }
 func mounted(ctx context.Context, path string) bool {
 	return exec.CommandContext(ctx, "mountpoint", "-q", path).Run() == nil
+}
+
+// Initiator returns this host's iSCSI initiator name, or "" without one.
+func Initiator() string {
+	path := "/etc/iscsi/initiatorname.iscsi"
+	if host := os.Getenv("LVMO_ISCSI_HOST_PROC"); host != "" {
+		path = host + "/1/root" + path
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if name, ok := strings.CutPrefix(strings.TrimSpace(line), "InitiatorName="); ok {
+			return strings.TrimSpace(name)
+		}
+	}
+	return ""
 }
 func nodeState(path string) string {
 	return filepath.Join("/var/lib/lvmo-node", backend.ID("stage-", path)+".json")
@@ -413,4 +432,28 @@ func (d *Driver) NodeExpandVolume(ctx context.Context, r *csi.NodeExpandVolumeRe
 		}
 	}
 	return &csi.NodeExpandVolumeResponse{CapacityBytes: v.Bytes}, nil
+}
+
+// SendHeartbeats tells every storage server that this node is alive, so that
+// failover never fences a node that can still reach its storage.
+func (d *Driver) SendHeartbeats(ctx context.Context, interval time.Duration) {
+	failing := false
+	for {
+		call, cancel := context.WithTimeout(ctx, interval)
+		_, err := d.API.Heartbeat(call, &pb.NodeHeartbeat{NodeId: d.NodeID})
+		cancel()
+		if (err != nil) != failing {
+			failing = err != nil
+			if failing {
+				log.Printf("heartbeat failing: %v", err)
+			} else {
+				log.Printf("heartbeat restored")
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+	}
 }

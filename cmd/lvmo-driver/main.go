@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	"github.com/michaelcourcy/lvmo-csi/internal/driver"
+	"github.com/michaelcourcy/lvmo-csi/internal/failover"
+	"github.com/michaelcourcy/lvmo-csi/internal/kube"
 	"github.com/michaelcourcy/lvmo-csi/internal/routing"
 	"github.com/michaelcourcy/lvmo-csi/internal/rpcutil"
 	"google.golang.org/grpc"
@@ -14,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 var version = "dev"
@@ -22,6 +26,7 @@ func main() {
 	endpoint := flag.String("endpoint", "unix:///csi/csi.sock", "CSI endpoint")
 	api := flag.String("api-endpoint", "", "optional default API endpoint for legacy handles and standalone testing")
 	node := flag.String("node-id", "", "node identity")
+	failoverTimeout := flag.Duration("failover-timeout", 0, "controller only: move workloads off a node that Kubernetes and the storage servers have lost for this long (0 disables)")
 	flag.Parse()
 	discover, e := routing.KubernetesDiscovery(driver.Name)
 	if e != nil {
@@ -32,7 +37,25 @@ func main() {
 		log.Fatal(e)
 	}
 	defer router.Close()
-	d := &driver.Driver{API: router, NodeID: *node, Version: version}
+	nodeID := ""
+	if *node != "" {
+		nodeID = driver.NodeID(*node, driver.Initiator())
+	}
+	d := &driver.Driver{API: router, NodeID: nodeID, Version: version}
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	if nodeID != "" {
+		go d.SendHeartbeats(ctx, 10*time.Second)
+	} else if *failoverTimeout > 0 {
+		client, err := kube.InCluster()
+		if err != nil {
+			log.Fatal(err)
+		}
+		if client != nil {
+			c := &failover.Controller{Kube: client, API: router, Driver: driver.Name, Timeout: *failoverTimeout, Now: time.Now}
+			go c.Run(ctx, 15*time.Second)
+		}
+	}
 	network, address := "unix", strings.TrimPrefix(*endpoint, "unix://")
 	if strings.HasPrefix(*endpoint, "tcp://") {
 		network = "tcp"
