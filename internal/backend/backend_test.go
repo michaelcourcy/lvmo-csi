@@ -401,3 +401,68 @@ func TestFenceNodeRequiresSilence(t *testing.T) {
 		t.Fatalf("fence by name failed: %v %v %v", fenced, e, r.acls)
 	}
 }
+
+// The session window must be set on the portal group before any ACL exists:
+// ACLs take the group's default when they are created, and targetcli has no
+// command to change an ACL's window afterwards.
+func TestISCSIQueueDepthReachesTargetAndNodes(t *testing.T) {
+	r := &recordingRunner{}
+	b := testBackend(t, r)
+	b.cfg.ISCSIQueueDepth = 8
+	b.cfg.ISCSICommandTimeout = 2 * time.Minute
+	ctx := context.Background()
+	v, e := b.CreateVolume(ctx, &pb.CreateVolumeRequest{Name: "queued", Bytes: 128 << 20, Protocol: "iscsi"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	tpg := "targetcli /iscsi/" + v.Iqn + "/tpg1 set attribute"
+	if !strings.Contains(r.last(tpg), "default_cmdsn_depth=8") {
+		t.Fatalf("open target without window: %s", r.last(tpg))
+	}
+	if _, e = b.PublishVolume(ctx, &pb.VolumePublish{VolumeId: v.Id, NodeId: "lvmo:a:iqn.2004-10.com.ubuntu:01:a", Initiator: "iqn.2004-10.com.ubuntu:01:a"}); e != nil {
+		t.Fatal(e)
+	}
+	window, acl := -1, -1
+	for i, call := range r.calls {
+		if strings.HasPrefix(call, tpg) && strings.Contains(call, "generate_node_acls=0") && strings.Contains(call, "default_cmdsn_depth=8") {
+			window = i
+		}
+		if strings.Contains(call, "/acls create") && acl < 0 {
+			acl = i
+		}
+	}
+	if window < 0 || acl < 0 || window > acl {
+		t.Fatalf("window must be set before the ACL is created (window %d, acl %d)", window, acl)
+	}
+	got, e := b.GetVolume(ctx, &pb.ID{Id: v.Id})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if got.IscsiQueueDepth != 8 || got.IscsiCommandTimeoutSeconds != 120 {
+		t.Fatalf("nodes would not apply the bound: %d %d", got.IscsiQueueDepth, got.IscsiCommandTimeoutSeconds)
+	}
+	b.state.Volumes["nfs"] = &pb.Volume{Id: "nfs", Protocol: "nfs", Ready: true}
+	if got, _ = b.GetVolume(ctx, &pb.ID{Id: "nfs"}); got.IscsiQueueDepth != 0 {
+		t.Fatal("NFS volumes have no iSCSI settings")
+	}
+}
+
+func TestZeroQueueDepthKeepsDefaults(t *testing.T) {
+	r := &recordingRunner{}
+	b := testBackend(t, r)
+	v, e := b.CreateVolume(context.Background(), &pb.CreateVolumeRequest{Name: "default", Bytes: 128 << 20, Protocol: "iscsi"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, call := range r.calls {
+		if strings.Contains(call, "default_cmdsn_depth") {
+			t.Fatalf("window set although disabled: %s", call)
+		}
+	}
+	if got, _ := b.GetVolume(context.Background(), &pb.ID{Id: v.Id}); got.IscsiQueueDepth != 0 || got.IscsiCommandTimeoutSeconds != 0 {
+		t.Fatal("nodes told to change defaults")
+	}
+	if _, e = New(Config{Root: t.TempDir(), Server: "10.0.0.1", VGs: []string{"vg"}, ISCSIQueueDepth: 1000}, r); e == nil {
+		t.Fatal("unreasonable queue depth accepted")
+	}
+}

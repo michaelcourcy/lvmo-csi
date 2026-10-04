@@ -24,6 +24,8 @@ func main() {
 	pool := flag.String("pool", "lvmo-pool", "existing thin pool name in every VG")
 	clients := flag.String("nfs-clients", "*", "NFS export client selector")
 	nfsInsecure := flag.Bool("nfs-insecure", false, "allow NFS clients to connect from unprivileged source ports")
+	queueDepth := flag.Int("iscsi-queue-depth", 8, "commands in flight per iSCSI volume, on the target and the nodes; bounds latency when a disk is overloaded (0 keeps the defaults)")
+	commandTimeout := flag.Duration("iscsi-command-timeout", 120*time.Second, "SCSI command timeout nodes set on lvmo iSCSI disks (0 keeps the node default)")
 	flag.Parse()
 	if *server == "" {
 		// UDP connect selects a local route without sending a packet.
@@ -35,7 +37,7 @@ func main() {
 		conn.Close()
 	}
 	log.Printf("advertising storage address %s", *server)
-	b, e := backend.New(backend.Config{Root: *root, Server: *server, Pool: *pool, Clients: *clients, NFSInsecure: *nfsInsecure, VGs: flag.Args()}, backend.Exec{})
+	b, e := backend.New(backend.Config{Root: *root, Server: *server, Pool: *pool, Clients: *clients, NFSInsecure: *nfsInsecure, VGs: flag.Args(), ISCSIQueueDepth: *queueDepth, ISCSICommandTimeout: *commandTimeout}, backend.Exec{})
 	if e != nil {
 		log.Fatal(e)
 	}

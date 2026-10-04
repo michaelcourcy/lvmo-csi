@@ -45,6 +45,12 @@ type Config struct {
 	Root, Server, Pool, Clients string
 	NFSInsecure                 bool
 	VGs                         []string
+	// ISCSIQueueDepth bounds the commands in flight per iSCSI session, on the
+	// target and (through GetVolume) on the node, so that an overloaded disk
+	// queues work instead of timing commands out. 0 keeps the defaults.
+	ISCSIQueueDepth int
+	// ISCSICommandTimeout is the SCSI command timeout nodes set on lvmo disks.
+	ISCSICommandTimeout time.Duration
 }
 type state struct {
 	SnapshotDeleting  map[string]bool         `json:"snapshot_deleting,omitempty"`
@@ -98,6 +104,12 @@ func New(cfg Config, run Runner) (*Backend, error) {
 	}
 	if cfg.Clients == "" {
 		cfg.Clients = "*"
+	}
+	if cfg.ISCSIQueueDepth < 0 || cfg.ISCSIQueueDepth > 512 {
+		return nil, fmt.Errorf("iSCSI queue depth must be between 0 and 512")
+	}
+	if cfg.ISCSICommandTimeout < 0 {
+		return nil, fmt.Errorf("iSCSI command timeout must not be negative")
 	}
 	if strings.ContainsAny(cfg.Clients, " \n\t()") {
 		return nil, fmt.Errorf("invalid NFS client selector")
@@ -429,10 +441,16 @@ func (b *Backend) publish(ctx context.Context, v *pb.Volume) error {
 func (b *Backend) applyACL(ctx context.Context, v *pb.Volume) error {
 	tpg := "/iscsi/" + v.Iqn + "/tpg1"
 	allowed, fenced := b.state.Attachments[v.Id]
-	if !fenced {
-		return b.cmd(ctx, "targetcli", tpg, "set", "attribute", "authentication=0", "generate_node_acls=1", "demo_mode_write_protect=0", "cache_dynamic_acls=1")
+	// The session window is set before any ACL exists: ACLs, dynamic or
+	// explicit, take the portal group's default when they are created.
+	depth := []string{}
+	if b.cfg.ISCSIQueueDepth > 0 {
+		depth = append(depth, "default_cmdsn_depth="+strconv.Itoa(b.cfg.ISCSIQueueDepth))
 	}
-	if err := b.cmd(ctx, "targetcli", tpg, "set", "attribute", "authentication=0", "generate_node_acls=0", "cache_dynamic_acls=0"); err != nil {
+	if !fenced {
+		return b.cmd(ctx, "targetcli", append([]string{tpg, "set", "attribute", "authentication=0", "generate_node_acls=1", "demo_mode_write_protect=0", "cache_dynamic_acls=1"}, depth...)...)
+	}
+	if err := b.cmd(ctx, "targetcli", append([]string{tpg, "set", "attribute", "authentication=0", "generate_node_acls=0", "cache_dynamic_acls=0"}, depth...)...); err != nil {
 		return err
 	}
 	want := map[string]bool{}
@@ -621,7 +639,13 @@ func (b *Backend) GetVolume(ctx context.Context, r *pb.ID) (*pb.Volume, error) {
 	if v == nil || !v.Ready || b.state.Deleting[r.Id] {
 		return nil, status.Error(codes.NotFound, "volume not found")
 	}
-	return proto.Clone(v).(*pb.Volume), nil
+	out := proto.Clone(v).(*pb.Volume)
+	// Nodes apply the same queue bound and timeout when they log in.
+	if out.Protocol == "iscsi" {
+		out.IscsiQueueDepth = int32(b.cfg.ISCSIQueueDepth)
+		out.IscsiCommandTimeoutSeconds = int32(b.cfg.ISCSICommandTimeout / time.Second)
+	}
+	return out, nil
 }
 func (b *Backend) ListVolumes(context.Context, *pb.Empty) (*pb.Volumes, error) {
 	b.mu.Lock()

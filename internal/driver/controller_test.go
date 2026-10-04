@@ -37,3 +37,16 @@ func TestPublishToUnknownNodeIsNotFound(t *testing.T) {
 		t.Fatalf("unpublishing an unknown node must succeed: %v", e)
 	}
 }
+
+// Linux reserves 15 session slots for task management: a pool of 16 leaves a
+// single usable command, which silently caps the disk at queue depth 1.
+func TestCmdsMaxLeavesRoomForQueueDepth(t *testing.T) {
+	for depth, want := range map[int]int{1: 16, 8: 32, 17: 32, 18: 64, 128: 256, 4000: 2048} {
+		if got := cmdsMax(depth); got != want {
+			t.Fatalf("cmdsMax(%d) = %d, want %d", depth, got, want)
+		}
+		if got := cmdsMax(depth); depth < 2000 && got-15 < depth {
+			t.Fatalf("cmdsMax(%d) = %d leaves only %d usable slots", depth, got, got-15)
+		}
+	}
+}

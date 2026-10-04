@@ -202,23 +202,25 @@ func (x *CreateVolumeRequest) GetBlock() bool {
 }
 
 type Volume struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Id             string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Name           string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	Bytes          int64                  `protobuf:"varint,3,opt,name=bytes,proto3" json:"bytes,omitempty"`
-	Vg             string                 `protobuf:"bytes,4,opt,name=vg,proto3" json:"vg,omitempty"`
-	Protocol       string                 `protobuf:"bytes,5,opt,name=protocol,proto3" json:"protocol,omitempty"`
-	Filesystem     string                 `protobuf:"bytes,6,opt,name=filesystem,proto3" json:"filesystem,omitempty"`
-	Server         string                 `protobuf:"bytes,7,opt,name=server,proto3" json:"server,omitempty"`
-	Path           string                 `protobuf:"bytes,8,opt,name=path,proto3" json:"path,omitempty"`
-	Iqn            string                 `protobuf:"bytes,9,opt,name=iqn,proto3" json:"iqn,omitempty"`
-	Lineage        string                 `protobuf:"bytes,10,opt,name=lineage,proto3" json:"lineage,omitempty"`
-	Block          bool                   `protobuf:"varint,11,opt,name=block,proto3" json:"block,omitempty"`
-	SourceSnapshot string                 `protobuf:"bytes,12,opt,name=source_snapshot,json=sourceSnapshot,proto3" json:"source_snapshot,omitempty"`
-	SourceVolume   string                 `protobuf:"bytes,13,opt,name=source_volume,json=sourceVolume,proto3" json:"source_volume,omitempty"`
-	Ready          bool                   `protobuf:"varint,14,opt,name=ready,proto3" json:"ready,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state                      protoimpl.MessageState `protogen:"open.v1"`
+	Id                         string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Name                       string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	Bytes                      int64                  `protobuf:"varint,3,opt,name=bytes,proto3" json:"bytes,omitempty"`
+	Vg                         string                 `protobuf:"bytes,4,opt,name=vg,proto3" json:"vg,omitempty"`
+	Protocol                   string                 `protobuf:"bytes,5,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	Filesystem                 string                 `protobuf:"bytes,6,opt,name=filesystem,proto3" json:"filesystem,omitempty"`
+	Server                     string                 `protobuf:"bytes,7,opt,name=server,proto3" json:"server,omitempty"`
+	Path                       string                 `protobuf:"bytes,8,opt,name=path,proto3" json:"path,omitempty"`
+	Iqn                        string                 `protobuf:"bytes,9,opt,name=iqn,proto3" json:"iqn,omitempty"`
+	Lineage                    string                 `protobuf:"bytes,10,opt,name=lineage,proto3" json:"lineage,omitempty"`
+	Block                      bool                   `protobuf:"varint,11,opt,name=block,proto3" json:"block,omitempty"`
+	SourceSnapshot             string                 `protobuf:"bytes,12,opt,name=source_snapshot,json=sourceSnapshot,proto3" json:"source_snapshot,omitempty"`
+	SourceVolume               string                 `protobuf:"bytes,13,opt,name=source_volume,json=sourceVolume,proto3" json:"source_volume,omitempty"`
+	Ready                      bool                   `protobuf:"varint,14,opt,name=ready,proto3" json:"ready,omitempty"`
+	IscsiQueueDepth            int32                  `protobuf:"varint,15,opt,name=iscsi_queue_depth,json=iscsiQueueDepth,proto3" json:"iscsi_queue_depth,omitempty"`
+	IscsiCommandTimeoutSeconds int32                  `protobuf:"varint,16,opt,name=iscsi_command_timeout_seconds,json=iscsiCommandTimeoutSeconds,proto3" json:"iscsi_command_timeout_seconds,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
 }
 
 func (x *Volume) Reset() {
@@ -347,6 +349,20 @@ func (x *Volume) GetReady() bool {
 		return x.Ready
 	}
 	return false
+}
+
+func (x *Volume) GetIscsiQueueDepth() int32 {
+	if x != nil {
+		return x.IscsiQueueDepth
+	}
+	return 0
+}
+
+func (x *Volume) GetIscsiCommandTimeoutSeconds() int32 {
+	if x != nil {
+		return x.IscsiCommandTimeoutSeconds
+	}
+	return 0
 }
 
 type Volumes struct {
@@ -1190,7 +1206,7 @@ const file_api_v1_storage_proto_rawDesc = "" +
 	"filesystem\x12'\n" +
 	"\x0fsource_snapshot\x18\x06 \x01(\tR\x0esourceSnapshot\x12#\n" +
 	"\rsource_volume\x18\a \x01(\tR\fsourceVolume\x12\x14\n" +
-	"\x05block\x18\b \x01(\bR\x05block\"\xe0\x02\n" +
+	"\x05block\x18\b \x01(\bR\x05block\"\xcf\x03\n" +
 	"\x06Volume\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x14\n" +
@@ -1208,7 +1224,9 @@ const file_api_v1_storage_proto_rawDesc = "" +
 	"\x05block\x18\v \x01(\bR\x05block\x12'\n" +
 	"\x0fsource_snapshot\x18\f \x01(\tR\x0esourceSnapshot\x12#\n" +
 	"\rsource_volume\x18\r \x01(\tR\fsourceVolume\x12\x14\n" +
-	"\x05ready\x18\x0e \x01(\bR\x05ready\"4\n" +
+	"\x05ready\x18\x0e \x01(\bR\x05ready\x12*\n" +
+	"\x11iscsi_queue_depth\x18\x0f \x01(\x05R\x0fiscsiQueueDepth\x12A\n" +
+	"\x1discsi_command_timeout_seconds\x18\x10 \x01(\x05R\x1aiscsiCommandTimeoutSeconds\"4\n" +
 	"\aVolumes\x12)\n" +
 	"\avolumes\x18\x01 \x03(\v2\x0f.lvmo.v1.VolumeR\avolumes\"5\n" +
 	"\rExpandRequest\x12\x0e\n" +

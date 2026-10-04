@@ -1,6 +1,6 @@
 ---
 type: eks
-can-provide: [kubernetes, storage-server, test-storage-server, storage-server-reboot, nfs-client, iscsi-client, multi-node, distinct-initiators, node-power-control, kasten, object-storage]
+can-provide: [kubernetes, storage-server, test-storage-server, storage-server-reboot, nfs-client, iscsi-client, multi-node, distinct-initiators, node-power-control, kasten, object-storage, aws-storage]
 creation: agent              # the agent may create it; only the contributor deletes the cluster
 ---
 
@@ -86,6 +86,8 @@ addons:
 - name: coredns
 - name: kube-proxy
 - name: snapshot-controller
+- name: aws-ebs-csi-driver   # for comparisons with AWS storage (aws-storage)
+- name: aws-efs-csi-driver
 managedNodeGroups:
 - name: workers
   amiFamily: Ubuntu2404
@@ -97,6 +99,8 @@ managedNodeGroups:
   privateNetworking: false
   labels: {lvmo-test: worker}
   tags: {project: lvmo-csi, purpose: automated-test}
+  iam:
+    withAddonPolicies: {ebs: true, efs: true}
   preBootstrapCommands:
   - apt-get update -qq
   - DEBIAN_FRONTEND=noninteractive apt-get install -y -qq open-iscsi nfs-common
@@ -179,6 +183,23 @@ helm upgrade --install lvmo charts/lvmo-csi -n lvmo-system \
 KUBE_CONTEXT=$context API_ENDPOINT=$private:50051 bash scripts/install-storageclasses.sh
 ```
 
+### Optional: performance storage
+
+Only for `performance` scenarios, which compare lvmo with EBS and EFS. lvmo then needs a disk equivalent to an EBS volume, not a loop file:
+
+- In step 3, use a non-burstable instance (`--instance-type m6i.large`), place it in the same availability zone as the benchmark worker (EBS volumes are zonal), and add a dedicated data disk with the same performance as the EBS class: `'DeviceName=/dev/sdf,Ebs={VolumeSize=100,VolumeType=gp3,Iops=3000,Throughput=125,DeleteOnTermination=true}'`.
+- After `setup-vm.sh`, on the server: find the disk by its volume ID (`lsblk -dn -o NAME,SERIAL`, serial `vol…` without the dash), allow it in the LVM filter next to the loop devices, and create the VG:
+  ```sh
+  printf 'devices { global_filter = [ "a|^/dev/loop[0-9]+$|", "a|^%s$|", "r|.*|" ] }\n' "$dev" > /etc/lvm/lvmlocal.conf
+  pvcreate -y "$dev" && vgcreate lvmo-perf "$dev"
+  lvcreate --yes --type thin-pool -L 90G --poolmetadatasize 1G -n lvmo-pool lvmo-perf
+  sed -i 's/lvmo-test1 lvmo-test2$/lvmo-test1 lvmo-test2 lvmo-perf/' /etc/systemd/system/lvmo-api.service
+  systemctl daemon-reload && systemctl restart lvmo-api
+  ```
+- Create an EFS file system (General Purpose, Elastic throughput, encrypted) with a mount target in each of the cluster's subnets, behind a security group allowing TCP 2049 from the VPC.
+- StorageClasses: `lvmo-perf-iscsi` and `lvmo-perf-nfs` (`vg: lvmo-perf`); `ebs-gp3` (`ebs.csi.aws.com`, `type: gp3`, `iops: "3000"`, `throughput: "125"`, `WaitForFirstConsumer`); `efs` (`efs.csi.aws.com`, `provisioningMode: efs-ap`, `fileSystemId`).
+- VolumeSnapshotClass `ebs-snapshots` (`ebs.csi.aws.com`, `deletionPolicy: Delete`), to compare restored-volume reads with `lvmo-snapshots`.
+
 ### 5. The development image repository
 
 ```sh
@@ -207,6 +228,8 @@ aws iam detach-role-policy --role-name lvmo-test-storage --policy-arn arn:aws:ia
 aws iam delete-role --role-name lvmo-test-storage
 aws ecr delete-repository --repository-name lvmo-csi --force
 ```
+
+With the optional performance storage, also delete the EFS file system's mount targets (`aws efs describe-mount-targets`, `aws efs delete-mount-target`), then the file system (`aws efs delete-file-system`) and its security group. The data disk is deleted with the storage server.
 
 Release any Elastic IP tagged `project=lvmo-csi` that was added for a power-cycled worker. While its worker exists, releasing it makes the worker lose internet access again.
 

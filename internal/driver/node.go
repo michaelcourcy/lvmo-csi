@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,30 @@ func run(ctx context.Context, cmd string, args ...string) error {
 }
 func mounted(ctx context.Context, path string) bool {
 	return exec.CommandContext(ctx, "mountpoint", "-q", path).Run() == nil
+}
+
+// cmdsMax sizes a session's command pool for a queue depth: Linux keeps 15
+// slots for task management and requires a power of two of at least 16.
+func cmdsMax(depth int) int {
+	n := 16
+	for n < depth+15 && n < 2048 {
+		n *= 2
+	}
+	return n
+}
+
+// setCommandTimeout sets the SCSI command timeout of the disk behind an
+// iSCSI by-path link, so that queued commands are not aborted too early.
+func setCommandTimeout(dev string, seconds int) error {
+	disk, err := filepath.EvalSymlinks(dev)
+	if err != nil {
+		return err
+	}
+	path := "/sys/block/" + filepath.Base(disk) + "/device/timeout"
+	if err = os.WriteFile(path, []byte(strconv.Itoa(seconds)), 0644); err != nil {
+		return status.Errorf(codes.Internal, "set SCSI timeout %s: %v", path, err)
+	}
+	return nil
 }
 
 // Initiator returns this host's iSCSI initiator name, or "" without one.
@@ -163,6 +188,15 @@ func (d *Driver) NodeStageVolume(ctx context.Context, r *csi.NodeStageVolumeRequ
 		if e = run(ctx, "iscsiadm", "-m", "discovery", "-t", "sendtargets", "-p", portal); e != nil {
 			return nil, e
 		}
+		// Match the target's session window, so that an overloaded storage
+		// server queues commands instead of letting them time out.
+		if depth := int(v.IscsiQueueDepth); depth > 0 {
+			for name, value := range map[string]int{"node.session.queue_depth": depth, "node.session.cmds_max": cmdsMax(depth)} {
+				if e = run(ctx, "iscsiadm", "-m", "node", "-T", v.Iqn, "-p", portal, "-o", "update", "-n", name, "-v", strconv.Itoa(value)); e != nil {
+					return nil, e
+				}
+			}
+		}
 		if e = run(ctx, "iscsiadm", "-m", "node", "-T", v.Iqn, "-p", portal, "--login"); e != nil {
 			if _, se := os.Stat(dev); se != nil {
 				return nil, e
@@ -181,6 +215,11 @@ func (d *Driver) NodeStageVolume(ctx context.Context, r *csi.NodeStageVolumeRequ
 	}
 	if e != nil {
 		return nil, status.Error(codes.Unavailable, "iSCSI device did not appear")
+	}
+	if v.IscsiCommandTimeoutSeconds > 0 {
+		if e = setCommandTimeout(dev, int(v.IscsiCommandTimeoutSeconds)); e != nil {
+			return nil, e
+		}
 	}
 	if os.Getenv("LVMO_ISCSI_HOST_PROC") != "" {
 		var st unix.Stat_t

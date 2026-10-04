@@ -47,6 +47,7 @@ Scenarios declare the capabilities they **require**; environment instances decla
 | `node-power-control` | The agent may power a worker off and on, so that its kernel really stops. Stopping a Kind node container does not qualify |
 | `kubevirt` | KubeVirt or OpenShift Virtualization is installed and live migration works (needs hardware virtualization) |
 | `windows-guest-image` | A Windows VM image, with QEMU guest agent and OpenSSH server enabled, is available to the cluster. Agents never download or license one |
+| `aws-storage` | The cluster runs on AWS with the EBS and EFS CSI drivers, so that lvmo can be compared with AWS storage |
 | `kasten` | Kasten K10 is installed, or the agent may install it |
 | `object-storage` | An S3-compatible bucket the run may write to, with credentials limited to it, or the agent may create one |
 
@@ -64,6 +65,7 @@ A scenario belongs to zero or more groups, so that a run request can name a set 
 | `routing` | One driver serving several storage servers |
 | `resilience` | Recovery from failures: failed operations, reboots, node loss |
 | `kubevirt` | Virtual machine workloads |
+| `performance` | Measurements, compared with other storage; results go to [docs/performances-test.md](docs/performances-test.md) |
 
 Add a group here before using it in a scenario. `cleanup-audit` belongs to no group: it runs last after any set of scenarios on a `test-storage-server`.
 
