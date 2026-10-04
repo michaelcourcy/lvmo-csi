@@ -30,7 +30,14 @@ With `export AWS_REGION=eu-west-3 KUBECONFIG=~/.kube/lvmo-test-eks`:
 
 ## Deploy a code change
 
-- **Driver**: push a versioned image to the registry named in the instance file (ask first if none is named), then `helm upgrade lvmo charts/lvmo-csi -n lvmo-system --reuse-values --set image.repository=<repo> --set-string image.tag=<tag>`.
+- **Driver**: push the image to the environment's private ECR repository (Create step 5); the workers can pull from ECR without a pull secret:
+  ```sh
+  registry=$(aws sts get-caller-identity --query Account --output text).dkr.ecr.$AWS_REGION.amazonaws.com
+  aws ecr get-login-password | docker login --username AWS --password-stdin $registry
+  docker buildx build --platform linux/amd64 --build-arg VERSION=$tag -t $registry/lvmo-csi:$tag --push .
+  helm upgrade lvmo charts/lvmo-csi -n lvmo-system --reset-then-reuse-values --set image.repository=$registry/lvmo-csi --set-string image.tag=$tag
+  ```
+  Never push development images to `michaelcourcy/lvmo-csi`.
 - **API**: build `lvmo-csi` for `linux/amd64`, upload it with the same S3 transfer as in Create step 3, install it as `/usr/local/bin/lvmo-csi` with Run Command, and `systemctl restart lvmo-api`.
 
 ## Power-cycling a worker (`node-power-control`)
@@ -172,7 +179,15 @@ helm upgrade --install lvmo charts/lvmo-csi -n lvmo-system \
 KUBE_CONTEXT=$context API_ENDPOINT=$private:50051 bash scripts/install-storageclasses.sh
 ```
 
-### 5. The instance file
+### 5. The development image repository
+
+```sh
+aws ecr create-repository --repository-name lvmo-csi --image-tag-mutability MUTABLE --tags Key=project,Value=lvmo-csi
+```
+
+A private repository in the environment's account and region, used only for development images (see Deploy a code change).
+
+### 6. The instance file
 
 Write `.test/environments/<name>.md` (see the template) with `type: eks`, the kubeconfig path, the context, the storage server's instance id and private IP, the node group's Auto Scaling group name, and `created-by: agent`.
 
@@ -190,6 +205,7 @@ aws iam remove-role-from-instance-profile --instance-profile-name lvmo-test-stor
 aws iam delete-instance-profile --instance-profile-name lvmo-test-storage
 aws iam detach-role-policy --role-name lvmo-test-storage --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
 aws iam delete-role --role-name lvmo-test-storage
+aws ecr delete-repository --repository-name lvmo-csi --force
 ```
 
 Release any Elastic IP tagged `project=lvmo-csi` that was added for a power-cycled worker. While its worker exists, releasing it makes the worker lose internet access again.

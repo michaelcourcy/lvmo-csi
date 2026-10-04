@@ -25,7 +25,7 @@ Capabilities that depend on the instance, and must be declared there explicitly:
 
 ## Deploy a code change
 
-Push a versioned driver image to the registry named in the instance file (ask first if none is named), then `helm upgrade` with that tag. Copy the Linux AMD64 API binary to the storage VM and restart `lvmo-api`.
+Build the driver image inside the cluster and store it in OpenShift's internal registry, as `scripts/e2e-azure.sh` does (`oc new-build --binary --strategy=docker`, then `oc start-build --from-dir`), then `helm upgrade` with `image.repository=image-registry.openshift-image-registry.svc:5000/lvmo-system/lvmo-csi`. No external registry and no pull secret are needed. Copy the Linux AMD64 API binary to the storage VM and restart `lvmo-api`.
 
 ## Create
 

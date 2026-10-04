@@ -8,7 +8,7 @@ created-by: contributor      # contributor | agent
 delete-after-run: false      # only honoured when created-by is agent
 driver-install: agent-managed   # agent-managed: the agent may install, upgrade and uninstall lvmo
                                 # preinstalled: use what is installed, never change it
-image-registry: none         # where the agent may push test images, or none (ask first)
+image-registry: none         # extra registry for development images, if the type's own is not used; never michaelcourcy/lvmo-csi
 ---
 
 # my-env

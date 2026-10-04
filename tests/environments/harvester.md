@@ -25,7 +25,7 @@ Capabilities that depend on the instance:
 
 ## Deploy a code change
 
-Push a versioned driver image to the registry named in the instance file (ask first if none is named), then `helm upgrade` with that tag. Copy the API binary built for the storage host's architecture and restart `lvmo-api`.
+Push the image to the registry named in the instance file's `image-registry` (ask first if none is named; never `michaelcourcy/lvmo-csi`), then `helm upgrade` with that repository and tag. Copy the API binary built for the storage host's architecture and restart `lvmo-api`.
 
 ## Create
 
