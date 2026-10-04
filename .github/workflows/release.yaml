@@ -25,7 +25,9 @@ jobs:
         context: .
         platforms: linux/amd64,linux/arm64
         push: true
-        tags: ${{ secrets.DOCKERHUB_USERNAME }}/lvmo-csi:${{ github.ref_name }}
+        # The release repository is fixed; the secrets only provide the login,
+        # which may be a collaborator account.
+        tags: michaelcourcy/lvmo-csi:${{ github.ref_name }}
         build-args: VERSION=${{ github.ref_name }}
     - run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
       env:

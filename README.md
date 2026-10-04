@@ -295,6 +295,6 @@ Azure runs discover the current cluster's subnet, create a separate tagged resou
 
 ## Releases and license
 
-`make image VERSION=v0.1.0` publishes both Linux architectures using the current Docker authentication. `scripts/install-release.sh v0.1.0` downloads and verifies GitHub release binaries. GitHub Actions release publishing requires repository secrets `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`; local authenticated publishing does not require copying credentials into the repository.
+`make image VERSION=v0.1.0` publishes both Linux architectures using the current Docker authentication. `scripts/install-release.sh v0.1.0` downloads and verifies GitHub release binaries. Pushing a `v*` tag runs the GitHub Actions release workflow, which publishes the binaries, chart and GitHub release, and pushes the image to `michaelcourcy/lvmo-csi`. It needs two repository secrets (Settings → Secrets and variables → Actions → Repository secrets): `DOCKERHUB_USERNAME`, a Docker Hub account allowed to push to that repository, and `DOCKERHUB_TOKEN`, a Docker Hub personal access token with Read & Write permission for that account. Local authenticated publishing does not require copying credentials into the repository.
 
 Apache License 2.0: permissive reuse with an explicit patent grant.
