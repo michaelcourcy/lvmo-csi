@@ -167,3 +167,40 @@ The bound does not change what the disk can do with small writes. During the pre
 ## Evidence
 
 `.test/reports/perf-queue8/` (experiment) and `.test/reports/perf-queue-impl/` (implementation): fio output per pod, per-pod fairness, the target's kernel log counts, the bound as seen on the target and the node, and the data disk sampled every 10 seconds (not committed).
+
+# Final matrix: twenty parallel workloads, with lvmo-iscsi bounded
+
+This section brings together the 20-workload results of the four StorageClasses, with lvmo-iscsi running with the queue bound (`--iscsi-queue-depth 8`, `--iscsi-command-timeout 2m`, the defaults). The sections above remain the detailed record of each run.
+
+## Conditions
+
+- Same workload for every class: 20 pods, each with its own 10 GiB volume and a 2 GiB file, written in full first (prefill), then the five fio jobs started together.
+- Same kind of clients: 2 × m6i.2xlarge in eu-west-3a, 10 pods on each. The lvmo-iscsi run used a recreated node group of the same type and zone.
+- The lvmo classes share one m6i.large storage server with one gp3 data disk (3000 IOPS, 125 MB/s). Each EBS volume has its own 3000 IOPS and 125 MB/s.
+- The queue bound only concerns iSCSI: `ebs-gp3`, `efs` and `lvmo-perf-nfs` come from the run described in [Twenty parallel workloads](#twenty-parallel-workloads-on-aws-storage-class), `lvmo-perf-iscsi` from [the implementation run](#bounding-iscsi-queues-so-that-an-overloaded-disk-degrades-gracefully).
+
+Every number below is computed the same way from the fio output of each pod: a total is the sum over the 20 pods of bytes or operations divided by each job's runtime; "worst p99" is the highest p99 latency of any pod in any of the four throughput jobs.
+
+## Matrix
+
+| | ebs-gp3 | efs | lvmo-perf-nfs | lvmo-perf-iscsi (bounded) |
+|---|---|---|---|---|
+| Pods completed, fio errors | 20/20, 0 | 20/20, 0 | 20/20, 0 | 20/20, 0 |
+| Seq write 1M, total (MiB/s) | 2 392 | 1 034 | 124 | 128 |
+| Seq read 1M, total (MiB/s) | 2 396 | 2 967 | 175 | 130 |
+| Rand write 4k, total (IOPS) | 59 981 | 32 683 | 997 | 2 991 |
+| Rand read 4k, total (IOPS) | 59 989 | 128 604 | 3 462 | 3 015 |
+| Seq write per pod, min – max (MiB/s) | 118.9 – 120.8 | 51.6 – 52.3 | 6.2 – 6.3 | 5.9 – 6.8 |
+| Rand read 4k QD1, median pod p50 (µs) | 545 | 569 | 5 997 | 6 652 |
+| Rand read 4k QD1, worst pod p99 (µs) | 872 | 6 521 | 8 716 | 8 094 |
+| Worst p99, any throughput job (ms) | 184 | 801 | 4 530 | 7 550 |
+| What limits the total | Each volume's 3000 IOPS / 125 MB/s, and the clients' EBS bandwidth (2 × 1250 MB/s) | EFS Elastic throughput (about 1 GiB/s write, 3 GiB/s read) | The storage server's one gp3 disk | The storage server's one gp3 disk |
+
+## Reading
+
+- **Capacity**: EBS and EFS scale with the number of workloads; both lvmo classes stay at what one disk delivers (about 125 MB/s and 3000 IOPS). This is the expected consequence of comparing 20 disks, or a distributed service, with one disk behind one server.
+- **Behaviour under overload**: with the bound, all four classes complete every workload without errors, and the lvmo classes share their disk evenly (sequential writes of 5.9 to 6.8 MiB/s per pod on iSCSI, 6.2 to 6.3 on NFS). Without the bound, lvmo-iscsi hung 8 of 20 pods in the same test.
+- **lvmo-iscsi against lvmo-nfs, on the same disk**: iSCSI now reaches the disk's IOPS for random writes (2 991 against 997 for NFS, whose writes are synchronous on the server), while NFS reads slightly more thanks to the server's page cache (175 MiB/s and 3 462 IOPS against 130 MiB/s and 3 015 IOPS). Latencies are of the same order: 6 to 7 ms for a single read with 20 clients queued on one disk.
+- **Latency**: EBS keeps sub-millisecond single reads under load; EFS keeps the median but has a longer tail; lvmo pays the queueing on its one disk, bounded well below the 2-minute command timeout.
+
+The next steps are lvmo's throughput on new volumes (small writes during the first minutes, suspected to be ext4's lazy initialization) and cost: a storage server disk sized for the workloads, compared on equal budget with EBS.
