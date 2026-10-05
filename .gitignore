@@ -1,6 +1,7 @@
 /bin/
 /dist/
 /.test/
+/.vscode/
 *.log
 .DS_Store
 .claude/settings.local.json
