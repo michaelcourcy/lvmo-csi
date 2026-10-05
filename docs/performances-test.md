@@ -204,3 +204,105 @@ Every number below is computed the same way from the fio output of each pod: a t
 - **Latency**: EBS keeps sub-millisecond single reads under load; EFS keeps the median but has a longer tail; lvmo pays the queueing on its one disk, bounded well below the 2-minute command timeout.
 
 The next steps are lvmo's throughput on new volumes (small writes during the first minutes, suspected to be ext4's lazy initialization) and cost: a storage server disk sized for the workloads, compared on equal budget with EBS.
+
+# Twenty parallel workloads with one local NVMe disk
+
+Run on 2026-10-05 by scenario [performance-nvme-parallel](../tests/scenarios/performance-nvme-parallel.md) with `scripts/test-performance.sh`, lvmo at commit `8f085ab` (queue bound included, `--iscsi-queue-depth 8`).
+
+## Question
+
+In the gp3 runs above, both lvmo classes stopped at what one gp3 volume delivers (125 MB/s, 3000 IOPS). What happens with the same workload when the storage server has one local NVMe SSD instead, as a server in a datacenter would? How far does lvmo go, and which limit comes next?
+
+On AWS the only local NVMe disks are instance store volumes, which are wiped when the instance stops. Here one stands in for a datacenter disk that keeps its data. **This is a measurement, not a way to run lvmo on AWS.**
+
+## Environment
+
+As in the gp3 runs (EKS 1.35 in eu-west-3, 2 × m6i.2xlarge clients in eu-west-3a, 10 pods on each), with these differences:
+
+| | |
+|---|---|
+| lvmo storage server | **i4i.large**, eu-west-3a: 2 vCPU like the m6i.large of the gp3 runs, 16 GiB of RAM (against 8), network baseline 0.78 Gbit/s with bursts up to 10 Gbit/s |
+| lvmo disk | **one 468 GB NVMe instance store disk** (436 GiB usable), used directly as the LVM physical volume; VG `lvmo-nvme`, thin pool of 392 GiB with the same 64 KiB chunks and 1 GiB of metadata on the same disk as `lvmo-perf` |
+| Classes | `lvmo-nvme-iscsi`, `lvmo-nvme-nfs`. EBS and EFS were not rerun: their figures come from the gp3 runs |
+| Workload | Unchanged: 20 pods per class, each with its own 10 GiB volume and a 2 GiB file, written in full first, then the five jobs started together (start spread ≤ 1 s) |
+
+## The raw disk
+
+fio on the raw device on the server, before the VG was created: no network, no LVM, no filesystem. These are the limits lvmo can reach at best.
+
+| | Seq write 1M | Seq read 1M | Rand write 4k | Rand read 4k | Rand read 4k QD1 p50 / p99 |
+|---|---|---|---|---|---|
+| NVMe instance store (i4i.large) | 263 MiB/s | 334 MiB/s | 27 494 IOPS | 49 991 IOPS | 117 / 126 µs |
+| gp3 volume of the earlier runs (provisioned) | 125 MB/s | 125 MB/s | 3 000 IOPS | 3 000 IOPS | — |
+
+The NVMe disk delivers about 2 to 2.7 times gp3's throughput and 9 to 17 times its IOPS.
+
+## One workload
+
+| StorageClass | Seq write 1M (MiB/s) | Seq read 1M (MiB/s) | Rand write 4k (IOPS) | Rand read 4k (IOPS) | Rand read 4k QD1 p50 / p99 (µs) |
+|---|---|---|---|---|---|
+| lvmo-nvme-iscsi | 261.6 | 334.6 | 27 542 | 29 684 | 224 / 289 |
+| lvmo-nvme-nfs | 262.1 | 591.7 ¹ | 23 948 | 70 403 ¹ | 121 / 163 ¹ |
+
+¹ From the server's page cache: the 4 GiB file fits in its 16 GiB of RAM.
+
+A single lvmo-iscsi workload already reaches the raw disk's sequential throughput and random write IOPS. Its random reads (one fio job at queue depth 32) stay below the disk's 50 000, which the raw test reached with 4 jobs at queue depth 128. The network and the iSCSI target add about 107 µs to a single read (224 µs against 117 µs on the raw disk).
+
+## Twenty workloads
+
+Computed the same way as the [final matrix](#final-matrix-twenty-parallel-workloads-with-lvmo-iscsi-bounded); the gp3 and AWS columns are copied from there.
+
+| | lvmo-nvme-iscsi | lvmo-nvme-nfs | lvmo-perf-iscsi (gp3, bounded) | lvmo-perf-nfs (gp3) | ebs-gp3 (20 volumes) | efs |
+|---|---|---|---|---|---|---|
+| Pods completed, fio errors | 20/20, 0 | 20/20, 0 | 20/20, 0 | 20/20, 0 | 20/20, 0 | 20/20, 0 |
+| Seq write 1M, total (MiB/s) | **268** | **260** | 128 | 124 | 2 392 | 1 034 |
+| Seq read 1M, total (MiB/s) | **339** | **383** ¹ | 130 | 175 | 2 396 | 2 967 |
+| Rand write 4k, total (IOPS) | **27 545** | **17 861** | 2 991 | 997 | 59 981 | 32 683 |
+| Rand read 4k, total (IOPS) | **50 096** | **50 010** ¹ | 3 015 | 3 462 | 59 989 | 128 604 |
+| Seq write per pod, min – max (MiB/s) | 13.3 – 14.1 | 12.9 – 13.2 | 5.9 – 6.8 | 6.2 – 6.3 | 118.9 – 120.8 | 51.6 – 52.3 |
+| Rand read 4k QD1, median pod p50 (µs) | **399** | **403** | 6 652 | 5 997 | 545 | 569 |
+| Rand read 4k QD1, worst pod p99 (µs) | 545 | 750 | 8 094 | 8 716 | 872 | 6 521 |
+| Worst p99, any throughput job (ms) | 1 434 | 1 787 | 7 550 | 4 530 | 184 | 801 |
+| What limits the total | The NVMe disk, every job; CPU close behind on random reads | The NVMe disk; on random reads the disk and the server's 2 vCPU together | gp3 disk | gp3 disk | Each volume, and the clients' EBS bandwidth | EFS Elastic throughput |
+
+¹ Partly from the server's page cache: 16 GiB of RAM for 40 GiB of files. During random reads the disk served about 40 000 reads/s for 50 000 client reads/s, so about a fifth came from memory.
+
+Compared with the same class on gp3:
+
+| | Seq write | Seq read | Rand write 4k | Rand read 4k | QD1 median latency |
+|---|---|---|---|---|---|
+| lvmo-iscsi, NVMe / gp3 | ×2.1 | ×2.6 | ×9.2 | ×16.6 | 17× lower |
+| lvmo-nfs, NVMe / gp3 | ×2.1 | ×2.2 | ×17.9 | ×14.4 | 15× lower |
+
+## Reading
+
+- **lvmo-iscsi delivers the disk.** With 20 workloads, every iSCSI total equals the raw disk's limit (268 against 263 MiB/s written, 339 against 334 read, 27 545 against 27 494 random writes, 50 096 against 49 991 random reads), and the disk was 100% busy in every job. lvmo adds no ceiling of its own below what this disk can do. The gains over gp3 follow the disk exactly: ×2 to ×2.6 where the disk is ×2 to ×2.7 faster in throughput, ×9 to ×17 where it is ×9 to ×17 faster in IOPS.
+- **Sharing stays fair, and latency drops by an order of magnitude.** Per-pod sequential writes stay within 6% of each other (13.3 to 14.1 MiB/s), as on gp3. With 20 clients queued on one disk, a single 4 KiB read takes 0.4 ms instead of 6.7 ms, below the 545 µs that one EBS volume per pod gave. The worst wait in any job fell from 7.5 s to 1.4 s. The target logged no abort, data timeout or closed connection.
+- **lvmo-nfs reaches the disk too, except for random writes.** Sequential writes are at the disk's limit, and reads are slightly above it thanks to the page cache. Random 4 KiB writes reach 17 861 IOPS while the disk performed 27 500 writes/s at 99% utilisation: each synchronous NFS write costs about 1.5 disk writes once ext4's journal and metadata on the server are added. On gp3 the same overhead left NFS at a third of iSCSI's random write IOPS; on NVMe it is two thirds.
+- **The server's 2 vCPU are the next limit.** The iSCSI target and the NFS server run in the kernel. During random reads at 50 000 IOPS, the server's CPU was 78% busy for iSCSI (system and softirq time) and fully busy for NFS (0% idle). With a faster disk, or more of them, this server would be CPU-bound before it was disk-bound.
+- **The network carried it, on burst credits.** The server sent up to 338 MB/s and received up to 265 MB/s, about 2.7 and 2.1 Gbit/s, three times its 0.78 Gbit/s baseline. The interface's `bw_in_allowance_exceeded` and `bw_out_allowance_exceeded` counters grew (3.7 million and 0.5 million packets queued or dropped), mostly during the prefill and the sequential read job, yet throughput stayed at the disk's limits. This looks like bursts from 20 clients exceeding the momentary allowance rather than a sustained cap. A longer run would use up the burst credits and fall to the baseline of about 93 MiB/s, below even the gp3 disk. A datacenter server has a dedicated NIC instead; on AWS a non-burstable network needs a larger instance.
+
+## What the NVMe run revealed about new iSCSI volumes
+
+Between their first mount and the start of the prefill, the 20 new iSCSI volumes sent the disk 5.35 million writes of exactly 1 KiB (5.8 GB) in about 4.5 minutes. For the first minute this held the disk at its IOPS limit (27 500 writes/s, 99% busy). NFS volumes showed nothing of the kind: their prefill went straight to 262 MB/s in writes of 55 KiB.
+
+The cause, checked on one new volume:
+
+1. `mkfs.ext4` runs on the server, on the new thin LV, but does not mark the inode tables as zeroed (`ITABLE_ZEROED` is unset in all 81 block groups of a 10 GiB volume). After the first mount, the node's `ext4lazyinit` thread zeroes them, about 160 MiB per volume.
+2. The node does this with a few large zeroing commands: 49 write commands for 66 MB during the probe. The LUN advertises WRITE SAME (`emulate_tpws=1`).
+3. The thin LV under the LUN does not support write-zeroes (`write_zeroes_max_bytes` is 0), so LIO emulates each command with block-sized writes: the 1 KiB writes seen on the disk, about 3 500 per second for a single volume.
+
+The measured amount is about 290 MiB per volume, before the prefill started (small writes kept mixing with the prefill afterwards). The inode tables explain 160 MiB of it; the rest is not explained yet. At gp3's 3000 IOPS, 5.35 million writes take about 30 minutes, which matches the 25 minutes of small writes seen during the gp3 prefill. The ext4 lazy initialization suspected in [the queue-bound section](#bounding-iscsi-queues-so-that-an-overloaded-disk-degrades-gracefully) is confirmed as the main source, together with the way LIO turns it into small writes.
+
+The zeroing is useless: a new thin LV reads as zeros, and the pool zeroes newly provisioned chunks. A candidate fix is to format with `mkfs.ext4 -E assume_storage_prezeroed=1` (e2fsprogs 1.47 and later, the version in Ubuntu 24.04), which marks the inode tables as zeroed without writing them. It is not implemented yet and needs its own test.
+
+## Limits of this run
+
+- One run per class; no variance measured.
+- AWS instance store, not a datacenter server: the disk is lost when the instance stops, and the network is burstable.
+- The server has twice the RAM of the gp3 runs' server, which helps NFS reads (see note ¹).
+- The prefill window was 15 minutes. The gp3 runs used 50 minutes, which their slower prefill needed; the measured jobs are the same.
+
+## Evidence
+
+`.test/reports/perf-nvme-single/` and `.test/reports/perf-nvme/` (fio output per pod, the script's tables, per-pod fairness, the storage server's `iostat`, `mpstat` and network allowance samples, the raw disk's fio output, the kernel log counts), not committed.

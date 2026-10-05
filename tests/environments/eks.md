@@ -200,6 +200,37 @@ Only for `performance` scenarios, which compare lvmo with EBS and EFS. lvmo then
 - StorageClasses: `lvmo-perf-iscsi` and `lvmo-perf-nfs` (`vg: lvmo-perf`); `ebs-gp3` (`ebs.csi.aws.com`, `type: gp3`, `iops: "3000"`, `throughput: "125"`, `WaitForFirstConsumer`); `efs` (`efs.csi.aws.com`, `provisioningMode: efs-ap`, `fileSystemId`).
 - VolumeSnapshotClass `ebs-snapshots` (`ebs.csi.aws.com`, `deletionPolicy: Delete`), to compare restored-volume reads with `lvmo-snapshots`.
 
+### Optional: benchmark client nodes
+
+Parallel performance scenarios need clients that do not limit the result: two non-burstable nodes in the storage server's availability zone, used by nothing else.
+
+```sh
+eksctl create nodegroup --cluster lvmo-test --region eu-west-3 --name bench --node-ami-family Ubuntu2404 \
+ --node-type m6i.2xlarge --nodes 2 --nodes-min 2 --nodes-max 2 --node-volume-size 30 --node-zones eu-west-3a \
+ --node-labels lvmo-bench=true --tags project=lvmo-csi,purpose=performance-test
+kubectl taint nodes -l lvmo-bench=true lvmo-bench=true:NoSchedule
+```
+
+Then load `iscsi_tcp` on each new node (see step 1); the lvmo node plugin tolerates every taint. Alternatively, declare the group in the cluster's eksctl file with `taints` and the same `preBootstrapCommands` as `workers`. Delete it after the run with `eksctl delete nodegroup --cluster lvmo-test --name bench`.
+
+### Optional: performance storage on a local NVMe disk
+
+Only for [performance-nvme-parallel](../scenarios/performance-nvme-parallel.md), which puts lvmo on a local SSD as a datacenter server would have. On AWS that means an instance store volume, which loses its data when the instance stops or terminates (a reboot keeps it): this is a measurement setup, never a way to run lvmo on AWS.
+
+- In step 3, use `--instance-type i4i.large` (2 vCPU, 16 GiB, one 468 GB NVMe instance store disk, network baseline 0.78 Gbit/s with bursts to 10) in the benchmark nodes' availability zone: take `subnet` from the subnets with `Name=availability-zone,Values=eu-west-3a`. The instance store disk needs no block device mapping. Tag the instance `Name=lvmo-nvme-storage` to tell it from a gp3 server.
+- After `setup-vm.sh`, on the server: the instance store disk is the NVMe device whose model is `Amazon EC2 NVMe Instance Storage` (the root disk's is `Amazon Elastic Block Store`). Install the measurement tools, measure the raw disk if the scenario asks for it (before `pvcreate`, which the measurement would destroy), then create the VG as for `lvmo-perf`:
+  ```sh
+  apt-get install -y -qq fio sysstat
+  dev=/dev/$(lsblk -dn -o NAME,MODEL | awk '/Instance Storage/ {print $1; exit}')
+  printf 'devices { global_filter = [ "a|^/dev/loop[0-9]+$|", "a|^%s$|", "r|.*|" ] }\n' "$dev" > /etc/lvm/lvmlocal.conf
+  pvcreate -y "$dev" && vgcreate lvmo-nvme "$dev"
+  lvcreate --yes --type thin-pool -l 90%VG --poolmetadatasize 1G -n lvmo-pool lvmo-nvme
+  sed -i 's/lvmo-test1 lvmo-test2$/lvmo-test1 lvmo-test2 lvmo-nvme/' /etc/systemd/system/lvmo-api.service
+  systemctl daemon-reload && systemctl restart lvmo-api
+  ```
+  After a stop and start, the VG is gone and the disk is blank: run these commands again.
+- StorageClasses `lvmo-nvme-iscsi` and `lvmo-nvme-nfs` (`vg: lvmo-nvme`). EBS and EFS are not needed: the scenario compares with the recorded gp3 matrix.
+
 ### 5. The development image repository
 
 ```sh
@@ -229,7 +260,7 @@ aws iam delete-role --role-name lvmo-test-storage
 aws ecr delete-repository --repository-name lvmo-csi --force
 ```
 
-With the optional performance storage, also delete the EFS file system's mount targets (`aws efs describe-mount-targets`, `aws efs delete-mount-target`), then the file system (`aws efs delete-file-system`) and its security group. The data disk is deleted with the storage server.
+Delete the `bench` node group if it was created. With the optional performance storage, also delete the EFS file system's mount targets (`aws efs describe-mount-targets`, `aws efs delete-mount-target`), then the file system (`aws efs delete-file-system`) and its security group. The data disk is deleted with the storage server.
 
 Release any Elastic IP tagged `project=lvmo-csi` that was added for a power-cycled worker. While its worker exists, releasing it makes the worker lose internet access again.
 
