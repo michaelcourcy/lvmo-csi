@@ -90,31 +90,18 @@ Generated bindings are committed. To regenerate, install `protoc`, `protoc-gen-g
 
 ## Storage server
 
-Use a dedicated Linux server (tested with Ubuntu 24.04). Install `lvm2 thin-provisioning-tools nfs-kernel-server targetcli-fb open-iscsi xfsprogs`; enable NFS and the kernel LIO iSCSI target modules. Create a thin pool named `lvmo-pool` in each configured VG. The server deliberately does not repartition disks or create VGs in production.
+Use a dedicated Linux server (tested with Ubuntu 24.04) with one or more VGs, each holding a thin pool named `lvmo-pool`, and run the lvmo API on it:
 
 ```sh
 sudo lvcreate --type thin-pool -L 100G --chunksize 64k --poolmetadatasize 1G -n lvmo-pool my-vg
 sudo ./bin/lvmo-csi --server=10.0.0.10 -P 50051 my-vg
 ```
 
-`lvmo-csi [-P port] VG...` automatically selects the local IPv4 address used by the default route. `--server` overrides the address Kubernetes nodes use for NFS/iSCSI; set it explicitly for multiple interfaces, NAT, or DNS-based access. `--root` defaults to `/var/lib/lvmo`; preserve this directory together with LVM metadata. `--pool` changes the thin pool name. `--nfs-insecure` allows NFS connections from unprivileged client source ports (default `false`); it applies to all NFS exports managed by this API, including exports regenerated on restart. It changes the source-port policy, not encryption, and does not affect gRPC or iSCSI. `--nfs-clients` restricts the NFS export selector (default `*`). XFS requires a volume large enough for its minimum filesystem size (use at least 512Mi).
+The server deliberately does not repartition disks, create VGs, or size the pool. Restrict management TCP/50051, NFS TCP/2049, and iSCSI TCP/3260 to trusted cluster nodes: the management API and iSCSI targets have no authentication, and NFS exports use `no_root_squash`.
 
-`--iscsi-queue-depth` (default `8`) bounds the commands each iSCSI volume may have in flight. The API sets it on every target's session window, and nodes apply the same value when they log in. `--iscsi-command-timeout` (default `2m`) is the SCSI command timeout nodes set on lvmo disks, instead of Linux's 30 seconds. Together they make an overloaded disk slow every volume down evenly instead of letting commands time out, be aborted and resent, and sessions drop: in a test with 20 workloads on one 3000-IOPS disk, every pod completed with these defaults, while 8 of 20 hung without them. The bound is a property of the server's disks, so it is set here and not in StorageClasses. Raise the depth for fast disks shared by few volumes; `0` keeps the Linux and LIO defaults. A changed value applies to a volume the next time it is attached to a node.
-
-Restrict management TCP/50051, NFS TCP/2049, and iSCSI TCP/3260 to trusted cluster nodes. The management API and iSCSI targets intentionally have no authentication; NFS exports use `no_root_squash`. Do not expose these ports publicly. Monitor thin-pool data and metadata space (see below). Configure LVM's devices file to include only backing PVs, particularly if the server is also an iSCSI initiator.
+[Build a storage server](docs/storage-server.md) is the step-by-step guide: sizing the disks, CPU, memory and network from the performance tests, packages, LVM filter, thin pool, the systemd unit and the API's options, NFS tuning, firewall, monitoring the pool, verification, adding capacity, backup and upgrade.
 
 The API persists operation intents and deletion tombstones atomically. Incomplete creates are reclaimed by a background worker, allowing retries. Deleted NFS exports may retain kernel references temporarily; physical LV reclamation is retried. Only one API process may own a state directory.
-
-### Sizing and monitoring the thin pool
-
-lvmo creates volumes in the pool but never sizes, extends, or watches it, and it does not refuse a PVC when the pool is nearly full: a volume's size is only a limit, not a reservation, and the sum of volume sizes may exceed the pool. Kubernetes cannot see the pool's state either. Keeping the pool healthy is the storage server operator's job.
-
-- **Chunk size** (`--chunksize`, 64 KiB to 1 GiB, a multiple of 64 KiB) is the pool's allocation unit and cannot change once the pool holds data. It is the same for every volume in the pool. Smaller chunks make the first write to a snapshotted chunk cheaper and make changed block tracking more precise, since changes are reported per chunk; larger chunks need less metadata and suit large sequential workloads without snapshots. 64 KiB is a good default for lvmo's snapshot and backup use. Use another VG with its own pool to offer a different chunk size.
-- **Metadata size** (`--poolmetadatasize`, at most about 16 GiB) grows with the number of mapped chunks, so with smaller chunks, more volumes, and more snapshots that diverge from their source. Estimate it with `thin_metadata_size -b 64k -s 100g -m 1000 -u g` (chunk size, pool size, maximum number of volumes and snapshots), and leave margin. It can be extended later with `lvextend --poolmetadatasize +1G my-vg/lvmo-pool`.
-- **Keep zeroing on** (the default). With `--zero n`, a new volume can read data left in its chunks by a deleted volume.
-- **Auto-extend**: leave free extents in the VG and set `thin_pool_autoextend_threshold` (for example `80`) and `thin_pool_autoextend_percent` (for example `20`) in the `activation` section of `/etc/lvm/lvm.conf`. `dmeventd` (`lvm2-monitor.service`) then extends the data and metadata LVs when either passes the threshold. The default threshold, `100`, disables it.
-- **Alert** on both `data_percent` and `metadata_percent`, from `lvs -o lv_name,lv_size,data_percent,metadata_percent,chunk_size my-vg/lvmo-pool` or the `dmeventd` warnings in the system log, which start at 80%. When data is full, writes in every pod using the pool wait 60 seconds, then fail. When metadata is full, the pool can switch to read-only and need `lvconvert --repair`, which is worse.
-- **Give space back**: the iSCSI targets advertise UNMAP, so discards issued on the nodes (`fstrim`, `blkdiscard`, or a filesystem mounted with `discard`) free the pool's chunks. NFS volumes are mounted on the server; enable `fstrim.timer` there (it trims every mounted filesystem, weekly on Ubuntu) so that deleted files give their chunks back.
 
 ## Kubernetes / OpenShift
 

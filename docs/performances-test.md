@@ -403,7 +403,7 @@ The target logged no abort, data timeout or closed connection.
 
 ## What this changes
 
-- `scripts/setup-vm.sh` and the README do not set the number of NFS server threads, so a server set up by them gets Ubuntu's 8. Raising it (for example `nfsconf --set nfsd threads 64`) is a proposed change, not made yet.
+- `scripts/setup-vm.sh` does not set the number of NFS server threads, so a test server gets Ubuntu's 8. [Build a storage server](storage-server.md#6-tune-nfs) now sets 64 (`nfsconf --set nfsd threads 64`) for real servers.
 - lvmo's own path reached 630 MiB/s and 50 000 IOPS (on NVMe) without becoming the limit. Within what was tested, the server's disks, its CPU, and the NFS thread count decide performance, not lvmo.
 
 ## Limits of this run
