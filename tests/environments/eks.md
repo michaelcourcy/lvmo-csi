@@ -231,6 +231,31 @@ Only for [performance-nvme-parallel](../scenarios/performance-nvme-parallel.md),
   After a stop and start, the VG is gone and the disk is blank: run these commands again.
 - StorageClasses `lvmo-nvme-iscsi` and `lvmo-nvme-nfs` (`vg: lvmo-nvme`). EBS and EFS are not needed: the scenario compares with the recorded gp3 matrix.
 
+### Optional: performance storage on five striped gp3 volumes
+
+Only for the striped variant of [performance-nvme-parallel](../scenarios/performance-nvme-parallel.md#variant-five-striped-gp3-volumes).
+
+- In step 3, use `--instance-type m6i.4xlarge` in the benchmark nodes' availability zone, tagged `Name=lvmo-striped-storage`. Its EBS baseline (625 MB/s, 20 000 IOPS) and network baseline (6.25 Gbit/s) cover the five volumes without burst credits; smaller m6i sizes do not (an m6i.large has 81 MB/s of EBS baseline, below one gp3 volume). Add the five data volumes, and tag them too, with `'ResourceType=volume,Tags=[{Key=project,Value=lvmo-csi}]'` in `--tag-specifications`:
+  ```sh
+  bdm='[{"DeviceName":"/dev/sda1","Ebs":{"VolumeSize":40,"VolumeType":"gp3","DeleteOnTermination":true}}'
+  for x in f g h i j; do bdm="$bdm,{\"DeviceName\":\"/dev/sd$x\",\"Ebs\":{\"VolumeSize\":100,\"VolumeType\":\"gp3\",\"Iops\":3000,\"Throughput\":125,\"DeleteOnTermination\":true}}"; done
+  bdm="$bdm]"   # --block-device-mappings "$bdm"
+  ```
+- Limit the server's RAM to that of the NVMe run, so that NFS reads are not all served from memory: on the server, `echo 'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT mem=16G"' > /etc/default/grub.d/99-lvmo-mem.cfg; update-grub`, then `aws ec2 reboot-instances`.
+- After `setup-vm.sh` and the reboot, on the server:
+  ```sh
+  apt-get install -y -qq fio sysstat
+  devs=$(lsblk -dn -o NAME,MODEL,SIZE | awk '/Elastic Block Store/ && $NF=="100G" {printf "/dev/%s ", $1}')
+  filter=$(for x in $devs; do printf '"a|^%s$|", ' $x; done)
+  printf 'devices { global_filter = [ "a|^/dev/loop[0-9]+$|", %s"r|.*|" ] }\n' "$filter" > /etc/lvm/lvmlocal.conf
+  pvcreate -y $devs && vgcreate lvmo-striped $devs
+  lvcreate --yes --type thin-pool -i 5 -I 64k --chunksize 64k -l 90%VG --poolmetadatasize 1G -n lvmo-pool lvmo-striped
+  sed -i 's/lvmo-test1 lvmo-test2$/lvmo-test1 lvmo-test2 lvmo-striped/' /etc/systemd/system/lvmo-api.service
+  systemctl daemon-reload && systemctl restart lvmo-api
+  ```
+  A plain VG without `-i 5` would place the pool on the volumes one after the other, and a small test would use only the first one.
+- StorageClasses `lvmo-striped-iscsi` and `lvmo-striped-nfs` (`vg: lvmo-striped`).
+
 ### 5. The development image repository
 
 ```sh

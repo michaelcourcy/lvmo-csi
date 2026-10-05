@@ -45,9 +45,20 @@ There is no pass threshold: this scenario measures, it does not judge.
 - The i4i.large network baseline is 0.78 Gbit/s, with bursts up to 10 Gbit/s. A total above the baseline relies on burst credits; when they run out, the `bw_in_allowance_exceeded` and `bw_out_allowance_exceeded` counters grow and throughput drops.
 - Whether the small writes seen on new gp3 volumes during prefill (1 to 5 KiB, suspected to be ext4's lazy inode table initialization) still slow the prefill on NVMe.
 
+## Variant: five striped gp3 volumes
+
+The same steps on a different disk topology: several ordinary disks striped in one server, as an on-premises server with a few SATA or SAS disks would be. It asks where lvmo's sequential throughput stops, which the NVMe disk (about 340 MiB/s) did not reach.
+
+- Storage server: five gp3 volumes of 100 GiB, 3000 IOPS and 125 MB/s each, in one VG `lvmo-striped`, with the thin pool's data striped over the five (`lvcreate --type thin-pool -i 5 -I 64k --chunksize 64k`). The disks then add up to 625 MB/s and 15 000 IOPS. The instance's own baselines must cover that without burst credits, or the run measures AWS's credits: on `eks`, an `m6i.4xlarge` (EBS baseline 625 MB/s and 20 000 IOPS, network baseline 6.25 Gbit/s), booted with `mem=16G` so that the server has as much RAM as the NVMe run's (see [Optional: performance storage on five striped gp3 volumes](../environments/eks.md#optional-performance-storage-on-five-striped-gp3-volumes)).
+- StorageClasses `lvmo-striped-iscsi` and `lvmo-striped-nfs`; output in `.test/reports/perf-striped-single` and `.test/reports/perf-striped`.
+- Step 2 measures a plain LV striped the same way (`lvcreate -i 5 -I 64k`), deleted before the thin pool is created. Step 4 samples the five data disks.
+- Expected: the same as above. The prediction to confirm or refute is that the totals reach the striped disks' limits (about 625 MiB/s and 15 000 IOPS).
+
 ## Validation
 
 Run on `eks-paris` on 2026-10-05 (i4i.large, lvmo commit `8f085ab`); results in [docs/performances-test.md](../../docs/performances-test.md#twenty-parallel-workloads-with-one-local-nvme-disk). 40/40 pods completed with no errors and no target abort. Every lvmo-iscsi total equalled the raw disk's limit; lvmo-nfs matched it except for random writes (1.5 disk writes per client write). Random reads also used most of the server's 2 vCPU. The run showed that new iSCSI volumes send millions of 1 KiB writes after their first mount (ext4 lazy inode table initialization, emulated by LIO on a thin LV without write-zeroes support).
+
+Striped variant run on `eks-paris` on 2026-10-05 (m6i.4xlarge with `mem=16G`, 5 × gp3); results in [docs/performances-test.md](../../docs/performances-test.md#twenty-parallel-workloads-with-five-striped-gp3-volumes). 40/40 pods completed, with no errors and no target abort. lvmo-iscsi reached the stripe's limits (629 MiB/s, 14 990 IOPS). lvmo-nfs reached them on sequential I/O, but with Ubuntu's default 8 nfsd threads its random writes stopped at 2 895 IOPS; a rerun with 64 threads gave 8 626 IOPS, at the disks' limit.
 
 ## Evidence
 

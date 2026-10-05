@@ -2,6 +2,30 @@
 
 Each section is one measurement campaign: what was compared, on which environment, the numbers, and how to read them. Numbers come from fio JSON output; the method is the scenario named in each section.
 
+## Summary: lvmo delivers what the storage server's disks can do
+
+**lvmo delivers what the storage server's disks can do, shared fairly between volumes. Size the server's disks, CPU and network, and you know what the workloads will get.**
+
+Three storage server topologies ran the same test: 20 workloads at once, each on its own lvmo-iscsi volume. Each time, the totals landed on the limits of the server's disks, measured with fio directly on the server:
+
+| Storage server's disks | Raw disks: seq write, rand write, rand read | lvmo-iscsi, 20 workloads: seq write, rand write, rand read | Section |
+|---|---|---|---|
+| 1 gp3 volume | 125 MB/s, 3 000 IOPS, 3 000 IOPS (provisioned) | 128 MiB/s, 2 991 IOPS, 3 015 IOPS | [gp3, bounded](#bounding-iscsi-queues-so-that-an-overloaded-disk-degrades-gracefully) |
+| 1 local NVMe disk | 263 MiB/s, 27 494 IOPS, 49 991 IOPS | 268 MiB/s, 27 545 IOPS, 50 096 IOPS | [NVMe](#twenty-parallel-workloads-with-one-local-nvme-disk) |
+| 5 gp3 volumes, striped | 625 MiB/s, 14 929 IOPS, 14 983 IOPS | 629 MiB/s, 14 990 IOPS, 14 976 IOPS | [Striped](#twenty-parallel-workloads-with-five-striped-gp3-volumes) |
+
+lvmo itself never became the limit, up to 630 MiB/s and 50 000 IOPS. Each workload gets an even share of the total: sequential writes per volume stayed within a few percent of each other in every run, and no workload failed.
+
+This holds under these conditions:
+
+- **The server's CPU, network and RAM count as well as its disks.** The iSCSI target and the NFS server run in its kernel: a 2-vCPU server was close to CPU-bound at 50 000 IOPS. On a server with more RAM than data, NFS reads can exceed the disks thanks to the page cache.
+- **NFS needs enough server threads.** With Ubuntu's default of 8 NFS server threads, NFS random I/O stopped far below disks of ordinary latency (2 895 IOPS on the striped volumes); with 64 it reached them (8 626). `scripts/setup-vm.sh` does not set this yet.
+- **NFS random writes cost more than iSCSI's**: 1.5 to 3 disk writes per client write (ext4's journal and metadata on the server), so NFS reaches a third to two thirds of iSCSI's random write IOPS on the same disks (33% on one gp3 volume, 58% on the stripe, 65% on NVMe).
+- **New iSCSI volumes generate millions of 1 KiB writes during their first minutes** (ext4 lazy initialization, emulated by the iSCSI target), taking the disks' IOPS from other volumes until it ends. A fix is proposed, not implemented yet.
+- **Latency**: lvmo adds about 100 µs per operation over the raw disk; under load, latency is the queueing of all volumes on the shared disks.
+- **This depends on the iSCSI queue bound** (`--iscsi-queue-depth`, since commit `e8c064b`). Without it, 20 iSCSI workloads on one overloaded disk collapsed instead of slowing down.
+- **What was not tested**: more than 630 MiB/s or 50 000 IOPS, real applications instead of fio, variance between runs (one run each), and on-premises hardware. The NVMe and striped servers were AWS stand-ins for on-premises servers.
+
 # Basic comparison on aws storage class
 
 Run on 2026-10-04 by scenario [performance-aws-baseline](../tests/scenarios/performance-aws-baseline.md) with `scripts/test-performance.sh`, lvmo `v0.1.0-alpha.3`.
@@ -306,3 +330,88 @@ The zeroing is useless: a new thin LV reads as zeros, and the pool zeroes newly 
 ## Evidence
 
 `.test/reports/perf-nvme-single/` and `.test/reports/perf-nvme/` (fio output per pod, the script's tables, per-pod fairness, the storage server's `iostat`, `mpstat` and network allowance samples, the raw disk's fio output, the kernel log counts), not committed.
+
+# Twenty parallel workloads with five striped gp3 volumes
+
+Run on 2026-10-05 by the striped variant of scenario [performance-nvme-parallel](../tests/scenarios/performance-nvme-parallel.md#variant-five-striped-gp3-volumes), lvmo at commit `8f085ab` (queue bound included).
+
+## Question
+
+The NVMe run answered how many IOPS lvmo can serve, but not how far its sequential throughput goes: that disk stopped at about 340 MiB/s. Here the storage server has five ordinary disks striped together, as an on-premises server with a few SATA or SAS disks would. The prediction was that lvmo would reach the stripe's limits, about 625 MiB/s and 15 000 IOPS. Is that right, and if not, what stops it?
+
+## Environment
+
+As in the gp3 and NVMe runs (EKS 1.35 in eu-west-3, 2 × m6i.2xlarge clients in eu-west-3a, 10 pods on each), with these differences:
+
+| | |
+|---|---|
+| lvmo storage server | **m6i.4xlarge**, eu-west-3a: 16 vCPU, booted with `mem=16G` to keep the NVMe run's RAM (about 15 GiB usable). Its baselines (EBS 625 MB/s and 20 000 IOPS, network 6.25 Gbit/s) cover the five volumes without burst credits; an m6i.large has 81 MB/s of EBS baseline, below even one gp3 volume |
+| lvmo disks | **five gp3 volumes**, 100 GiB, 3000 IOPS and 125 MB/s each, in one VG `lvmo-striped`; thin pool data striped over the five with 64 KiB stripes (`lvcreate --type thin-pool -i 5 -I 64k --chunksize 64k`), 1 GiB of metadata on one of them |
+| Classes | `lvmo-striped-iscsi`, `lvmo-striped-nfs` |
+| Workload | Unchanged: 20 pods per class, 10 GiB volume and 2 GiB file each, full prefill, then the five jobs together (start spread ≤ 1 s) |
+
+A plain VG without striping would have been pointless: LVM places a volume group's extents one disk after the other, and 40 GiB of test data would have used only the first disk.
+
+## The raw stripe
+
+fio on a plain LV striped the same way, on the server, before the thin pool was created:
+
+| | Seq write 1M | Seq read 1M | Rand write 4k | Rand read 4k | Rand read 4k QD1 p50 / p99 |
+|---|---|---|---|---|---|
+| 5 × gp3, striped | 625 MiB/s | 625 MiB/s | 14 929 IOPS | 14 983 IOPS | 569 / 741 µs |
+
+Exactly five times one gp3 volume, with gp3's latency.
+
+## One workload
+
+| StorageClass | Seq write 1M (MiB/s) | Seq read 1M (MiB/s) | Rand write 4k (IOPS) | Rand read 4k (IOPS) | Rand read 4k QD1 p50 / p99 (µs) |
+|---|---|---|---|---|---|
+| lvmo-striped-iscsi | 624.6 | 624.2 | 8 231 | 11 289 | 668 / 864 |
+| lvmo-striped-nfs | 622.8 | 1 135.9 ¹ | 2 871 | 72 888 ¹ | 93 / 130 ¹ |
+
+¹ From the server's page cache (4 GiB file, about 15 GiB of RAM).
+
+One lvmo-iscsi workload already reaches the stripe's 625 MiB/s in both directions. Its random IOPS are those of one fio job at queue depth 32 with gp3 latency (about 32 / 3.9 ms ≈ 8 200), not the stripe's limit.
+
+## Twenty workloads
+
+| | lvmo-striped-iscsi | lvmo-striped-nfs, 8 nfsd threads (Ubuntu default) | lvmo-striped-nfs, 64 nfsd threads | lvmo-nvme-iscsi | lvmo-nvme-nfs |
+|---|---|---|---|---|---|
+| Pods completed, fio errors | 20/20, 0 | 20/20, 0 | 20/20, 0 | 20/20, 0 | 20/20, 0 |
+| Seq write 1M, total (MiB/s) | **629** | **619** | **624** | 268 | 260 |
+| Seq read 1M, total (MiB/s) | **630** | **672** ² | **736** ² | 339 | 383 ² |
+| Rand write 4k, total (IOPS) | **14 990** | 2 895 | **8 626** | 27 545 | 17 861 |
+| Rand read 4k, total (IOPS) | **14 976** | 18 179 ² | **19 349** ² | 50 096 | 50 010 ² |
+| Seq write per pod, min – max (MiB/s) | 29.8 – 32.8 | 30.8 – 31.5 | 29.2 – 34.1 | 13.3 – 14.1 | 12.9 – 13.2 |
+| Rand read 4k QD1, median pod p50 (µs) | 709 | 1 139 | 700 | 399 | 403 |
+| Rand read 4k QD1, worst pod p99 (µs) | 5 603 | 1 761 | 5 800 | 545 | 750 |
+| Worst p99, any throughput job (ms) | 751 | 558 | 784 | 1 434 | 1 787 |
+| What limits the total | The five disks, every job | NFS server threads on random I/O; the disks on sequential I/O | The five disks, every job | The NVMe disk; CPU close behind | The NVMe disk, and CPU on random reads |
+
+² Partly from the server's page cache (about 15 GiB of RAM for 40 GiB of files).
+
+The target logged no abort, data timeout or closed connection.
+
+## Reading
+
+- **The prediction holds for lvmo-iscsi.** Every total is the stripe's limit: 629 and 630 MiB/s against 625, 14 990 and 14 976 IOPS against about 15 000. The disks were 99% busy in the sequential jobs, and their 15 000 operations per second were used in full in the random ones. lvmo-iscsi adds no limit of its own at 630 MiB/s, nearly twice what the NVMe run could test. The server's 16 vCPU stayed almost idle (2% system time; the rest was waiting on the disks), so the CPU limit seen on the 2-vCPU NVMe server came from that server's size, not from lvmo. Twenty workloads share the disks evenly (29.8 to 32.8 MiB/s each).
+- **lvmo-nfs is held back by the NFS server's default 8 threads, not by the disks.** With 8 threads, random writes stopped at 2 895 IOPS, with one workload as with twenty, while the disks did 8 800 writes/s, 59% of what they can. Each synchronous NFS write holds a server thread for about three disk writes at gp3's latency (0.9 ms each), and 8 threads at about 2.7 ms per request give about 3 000 requests per second. With 64 threads (`nfsconf --set nfsd threads 64`), random writes rose to 8 626 IOPS, the median single-read latency fell from 1.14 ms to 0.70 ms, and the disks were at their 15 000 operations per second (about 1.7 disk writes per client write) in every job. On NVMe the same 8 threads had been enough, because each disk write took tens of microseconds. **A storage server with disks of ordinary latency needs more NFS server threads than Ubuntu's default.**
+- **Sequential throughput is the same for both protocols.** About 625 MiB/s written, and reads at or above the stripe's limit, NFS getting extra from the page cache.
+- **Random writes still cost NFS more.** With enough threads, NFS reaches 58% of iSCSI's random write IOPS on the same disks (8 626 against 14 990), the price of synchronous writes and ext4's journal on the server. It was 65% on NVMe.
+- **The small writes on new iSCSI volumes, again.** Before the prefill, the 20 new volumes sent 4.5 million writes of 1 KiB, the ext4 lazy initialization described in the [NVMe section](#what-the-nvme-run-revealed-about-new-iscsi-volumes). They took the stripe's full 15 000 operations per second for about 4 minutes before the prefill could start.
+- **Network.** The server received up to 1 143 MB/s in short peaks during the prefill, and the interface's allowance counters grew (9.1 million packets in, 0.5 million out), yet throughput stayed at the disks' limits: bursts from 40 client connections, not a cap.
+
+## What this changes
+
+- `scripts/setup-vm.sh` and the README do not set the number of NFS server threads, so a server set up by them gets Ubuntu's 8. Raising it (for example `nfsconf --set nfsd threads 64`) is a proposed change, not made yet.
+- lvmo's own path reached 630 MiB/s and 50 000 IOPS (on NVMe) without becoming the limit. Within what was tested, the server's disks, its CPU, and the NFS thread count decide performance, not lvmo.
+
+## Limits of this run
+
+- One run per class; no variance measured.
+- The NFS rerun with 64 threads came after the first NFS run on the same server, with new volumes: same workload, same disks.
+- The RAM limit (`mem=16G`) keeps the page cache comparable with the NVMe run, not with the gp3 runs (8 GiB).
+
+## Evidence
+
+`.test/reports/perf-striped-single/`, `.test/reports/perf-striped/` and `.test/reports/perf-striped-nfs64/` (fio output per pod, the script's tables, per-pod fairness, the server's `iostat` of the five disks, `mpstat` and network samples, the raw stripe's fio output, the kernel log counts), not committed.
