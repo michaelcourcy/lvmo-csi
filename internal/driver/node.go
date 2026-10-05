@@ -2,6 +2,8 @@ package driver
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	pb "github.com/michaelcourcy/lvmo-csi/api/v1"
@@ -24,8 +26,17 @@ var nodeMu sync.Mutex
 // LVMO_ISCSI_HOST_PROC is only needed for nested container test nodes, whose
 // network namespace cannot communicate with the kernel iSCSI netlink service.
 func nodeCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
-	if host := os.Getenv("LVMO_ISCSI_HOST_PROC"); name == "iscsiadm" && host != "" {
+	host := os.Getenv("LVMO_ISCSI_HOST_PROC")
+	switch {
+	case name == "iscsiadm" && host != "":
 		args = append([]string{"--mount=" + host + "/1/ns/mnt", "--net=" + host + "/1/ns/net", "--", name}, args...)
+		name = "nsenter"
+	case name == "modprobe" && host != "":
+		args = append([]string{"--mount=" + host + "/1/ns/mnt", "--", name}, args...)
+		name = "nsenter"
+	case name == "modprobe":
+		// The node plugin shares the host's PID namespace: PID 1 is the host's.
+		args = append([]string{"--target=1", "--mount", "--", name}, args...)
 		name = "nsenter"
 	}
 	return exec.CommandContext(ctx, name, args...)
@@ -72,25 +83,84 @@ func setCommandTimeout(dev string, seconds int) error {
 	return nil
 }
 
-// Initiator returns this host's iSCSI initiator name, or "" without one.
-func Initiator() string {
-	path := "/etc/iscsi/initiatorname.iscsi"
-	if host := os.Getenv("LVMO_ISCSI_HOST_PROC"); host != "" {
-		path = host + "/1/root" + path
+const nodeDir = "/var/lib/lvmo-node"
+
+// NodeInitiator returns lvmo's own iSCSI initiator name on this node,
+// generating it the first time. It is kept on the host, so that it survives
+// pod restarts and reboots, and it never depends on the host's
+// /etc/iscsi/initiatorname.iscsi, which nodes cloned from one image share.
+func NodeInitiator(node string) (string, error) {
+	path := filepath.Join(nodeDir, "initiatorname")
+	if data, err := os.ReadFile(path); err == nil {
+		if name := strings.TrimSpace(string(data)); name != "" {
+			return name, nil
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
+	random := make([]byte, 8)
+	if _, err := rand.Read(random); err != nil {
+		return "", err
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		if name, ok := strings.CutPrefix(strings.TrimSpace(line), "InitiatorName="); ok {
-			return strings.TrimSpace(name)
+	name := newInitiator(node, hex.EncodeToString(random))
+	if err := os.MkdirAll(nodeDir, 0700); err != nil {
+		return "", err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(name+"\n"), 0600); err != nil {
+		return "", err
+	}
+	return name, os.Rename(tmp, path)
+}
+
+// newInitiator builds an IQN from the node name, for readability on the
+// storage server, and a random suffix, for uniqueness: node names come back
+// when nodes are replaced.
+func newInitiator(node, random string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(node) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '.' {
+			b.WriteRune(r)
+		}
+		if b.Len() == 63 {
+			break
 		}
 	}
-	return ""
+	return "iqn.2026-09.io.lvmo.node:" + b.String() + ":" + random
+}
+
+// ifaceName is the open-iscsi iface record through which lvmo logs in: it
+// carries lvmo's initiator name, and leaves the host's default iface alone.
+// It is derived from the initiator so that nested test nodes sharing one
+// iSCSI database each get their own.
+func ifaceName(initiator string) string { return backend.ID("lvmo-", initiator)[:21] }
+
+// ensureIface creates or corrects lvmo's iface record.
+func ensureIface(ctx context.Context, iface, initiator string) error {
+	out, err := nodeCommand(ctx, "iscsiadm", "-m", "iface", "-I", iface).CombinedOutput()
+	if err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if value, ok := strings.CutPrefix(strings.TrimSpace(line), "iface.initiatorname = "); ok && strings.TrimSpace(value) == initiator {
+				return nil
+			}
+		}
+	} else if e := run(ctx, "iscsiadm", "-m", "iface", "-I", iface, "-o", "new"); e != nil {
+		return e
+	}
+	return run(ctx, "iscsiadm", "-m", "iface", "-I", iface, "-o", "update", "-n", "iface.initiatorname", "-v", initiator)
+}
+
+// LoadISCSIModule loads iscsi_tcp in the host's mount namespace: iscsiadm in
+// this container cannot load host modules, and some distributions ship the
+// module without loading it.
+func LoadISCSIModule(ctx context.Context) error {
+	if _, err := os.Stat("/sys/module/iscsi_tcp"); err == nil {
+		return nil
+	}
+	return run(ctx, "modprobe", "iscsi_tcp")
 }
 func nodeState(path string) string {
-	return filepath.Join("/var/lib/lvmo-node", backend.ID("stage-", path)+".json")
+	return filepath.Join(nodeDir, backend.ID("stage-", path)+".json")
 }
 func (d *Driver) NodeGetInfo(context.Context, *csi.NodeGetInfoRequest) (*csi.NodeGetInfoResponse, error) {
 	return &csi.NodeGetInfoResponse{NodeId: d.NodeID}, nil
@@ -158,6 +228,11 @@ func (d *Driver) NodeStageVolume(ctx context.Context, r *csi.NodeStageVolumeRequ
 	if !strings.Contains(portal, ":") {
 		portal += ":3260"
 	}
+	_, initiator, _ := parseNodeID(d.NodeID)
+	if initiator == "" {
+		return nil, status.Error(codes.FailedPrecondition, "this node has no iSCSI initiator name")
+	}
+	iface := ifaceName(initiator)
 	if _, err := d.API.AcquireVolume(ctx, &pb.VolumeLease{VolumeId: v.Id, NodeId: d.NodeID}); err != nil {
 		return nil, err
 	}
@@ -176,7 +251,7 @@ func (d *Driver) NodeStageVolume(ctx context.Context, r *csi.NodeStageVolumeRequ
 		if mounted(cleanup, r.StagingTargetPath) || mounted(cleanup, filepath.Join(r.StagingTargetPath, "block")) {
 			return
 		}
-		if err := nodeCommand(cleanup, "iscsiadm", "-m", "node", "-T", v.Iqn, "-p", portal, "--logout").Run(); err != nil {
+		if err := nodeCommand(cleanup, "iscsiadm", "-m", "node", "-T", v.Iqn, "-p", portal, "-I", iface, "--logout").Run(); err != nil {
 			if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 21 {
 				return
 			}
@@ -185,19 +260,24 @@ func (d *Driver) NodeStageVolume(ctx context.Context, r *csi.NodeStageVolumeRequ
 	}()
 	dev := iscsiDevice(portal, v.Iqn)
 	if _, e = os.Stat(dev); e != nil {
-		if e = run(ctx, "iscsiadm", "-m", "discovery", "-t", "sendtargets", "-p", portal); e != nil {
+		if e = ensureIface(ctx, iface, initiator); e != nil {
+			return nil, e
+		}
+		// Discovery through lvmo's iface binds the node records to it, and
+		// presents lvmo's initiator, which the target's access list admits.
+		if e = run(ctx, "iscsiadm", "-m", "discovery", "-t", "sendtargets", "-p", portal, "-I", iface); e != nil {
 			return nil, e
 		}
 		// Match the target's session window, so that an overloaded storage
 		// server queues commands instead of letting them time out.
 		if depth := int(v.IscsiQueueDepth); depth > 0 {
 			for name, value := range map[string]int{"node.session.queue_depth": depth, "node.session.cmds_max": cmdsMax(depth)} {
-				if e = run(ctx, "iscsiadm", "-m", "node", "-T", v.Iqn, "-p", portal, "-o", "update", "-n", name, "-v", strconv.Itoa(value)); e != nil {
+				if e = run(ctx, "iscsiadm", "-m", "node", "-T", v.Iqn, "-p", portal, "-I", iface, "-o", "update", "-n", name, "-v", strconv.Itoa(value)); e != nil {
 					return nil, e
 				}
 			}
 		}
-		if e = run(ctx, "iscsiadm", "-m", "node", "-T", v.Iqn, "-p", portal, "--login"); e != nil {
+		if e = run(ctx, "iscsiadm", "-m", "node", "-T", v.Iqn, "-p", portal, "-I", iface, "--login"); e != nil {
 			if _, se := os.Stat(dev); se != nil {
 				return nil, e
 			}
@@ -389,6 +469,9 @@ func (d *Driver) NodeUnstageVolume(ctx context.Context, r *csi.NodeUnstageVolume
 			} // Exit 21 means no matching session/node remains.
 			for _, op := range [][]string{{"--logout"}, {"-o", "delete"}} {
 				args := append([]string{"-m", "node", "-T", v.Iqn, "-p", portal}, op...)
+				if _, initiator, _ := parseNodeID(d.NodeID); initiator != "" {
+					args = append(args, "-I", ifaceName(initiator))
+				}
 				out, err := nodeCommand(ctx, "iscsiadm", args...).CombinedOutput()
 				if err != nil {
 					if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 21 {

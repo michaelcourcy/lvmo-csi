@@ -155,6 +155,29 @@ spec:
       dnsPolicy: ClusterFirstWithHostNet
       tolerations:
       - operator: Exists
+      {{- if .Values.nodeCheck.iscsi }}
+      initContainers:
+      # Fails, with the reasons in its log, when the node lacks what iSCSI
+      # volumes need: kubectl logs -n {{ .Release.Namespace }} <pod> -c node-check
+      - name: node-check
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        securityContext: {privileged: true}
+        args: ["--check-node", "--node-id=$(NODE_NAME)"]
+        env:
+        {{- if .Values.iscsiHostProc }}
+        - {name: LVMO_ISCSI_HOST_PROC, value: /host-proc}
+        {{- end }}
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef: {fieldPath: spec.nodeName}
+        volumeMounts:
+        - {name: sys, mountPath: /sys, readOnly: true}
+        - {name: state, mountPath: /var/lib/lvmo-node}
+        {{- if .Values.iscsiHostProc }}
+        - {name: host-proc, mountPath: /host-proc}
+        {{- end }}
+      {{- end }}
       containers:
       - name: driver
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

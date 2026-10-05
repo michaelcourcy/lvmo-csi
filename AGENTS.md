@@ -43,7 +43,7 @@ Scenarios declare the capabilities they **require**; environment instances decla
 | `iscsi-client` | Every node has a working iSCSI initiator that can log in to the storage server's targets. Kind on Docker Desktop does **not** provide this |
 | `storage-server-reboot` | The agent may reboot the storage server |
 | `multi-node` | At least two schedulable worker nodes |
-| `distinct-initiators` | Each worker has its own kernel and its own iSCSI initiator name. Kind nodes on one Docker host do **not** provide this: they share one kernel |
+| `distinct-initiators` | Each worker has its own kernel and its own iSCSI daemon, so that its sessions stop with it. lvmo gives each node its own initiator name; Kind nodes on one host still do **not** provide this: they share one kernel and one `iscsid` |
 | `node-power-control` | The agent may power a worker off and on, so that its kernel really stops. Stopping a Kind node container does not qualify |
 | `kubevirt` | KubeVirt or OpenShift Virtualization is installed and live migration works (needs hardware virtualization) |
 | `windows-guest-image` | A Windows VM image, with QEMU guest agent and OpenSSH server enabled, is available to the cluster. Agents never download or license one |

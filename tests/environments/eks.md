@@ -26,7 +26,7 @@ With `export AWS_REGION=eu-west-3 KUBECONFIG=~/.kube/lvmo-test-eks`:
 - `kubectl -n lvmo-system get pods` shows the controller and 3 node pods ready.
 - `aws ssm describe-instance-information --filters Key=tag:Name,Values=lvmo-test-storage` shows the storage server `Online`.
 - On the storage server (Run Command or Session Manager): `systemctl is-active lvmo-loop lvmo-api lvmo-driver nfs-server` prints `active` four times, and `lvs` shows `lvmo-pool` in both VGs.
-- On each worker, `kubectl debug node/<name> --profile=sysadmin --image=busybox -- chroot /host sh -c 'cat /etc/iscsi/initiatorname.iscsi; lsmod | grep ^iscsi_tcp'` shows an initiator name different from the other workers', and the `iscsi_tcp` module. Delete the `node-debugger-*` pods afterwards.
+- Every `lvmo-node` pod is `Running`, and its `node-check` init container's log ends with `ready for lvmo iSCSI volumes` and an initiator name different from the other workers'.
 
 ## Deploy a code change
 
@@ -111,7 +111,7 @@ YAML
 eksctl create cluster -f /tmp/eks-lvmo-test.yaml --kubeconfig "$KUBECONFIG"
 ```
 
-About 20 minutes. Kubernetes 1.35 matches the `e2e.test` version used by the Kind scenarios. The `snapshot-controller` EKS add-on installs the snapshot CRDs and controller. eksctl also adds the `metrics-server` add-on by default. The workers install the iSCSI initiator and NFS client at boot. `iscsid` must run on the host, because the node plugin uses host networking and the host's iSCSI daemon. The `iscsi_tcp` kernel module must be loaded on the host too: Ubuntu's AWS kernel ships it but does not load it, and `iscsiadm` inside the node plugin cannot load host modules (it fails with `could not find module by name='iscsi_tcp'`). A node created from a node group without these commands needs them run once, for example through `kubectl debug node/<name> --profile=sysadmin --image=busybox -- chroot /host sh -c 'echo iscsi_tcp > /etc/modules-load.d/iscsi.conf; modprobe iscsi_tcp'`.
+About 20 minutes. Kubernetes 1.35 matches the `e2e.test` version used by the Kind scenarios. The `snapshot-controller` EKS add-on installs the snapshot CRDs and controller. eksctl also adds the `metrics-server` add-on by default. The workers install the iSCSI initiator and NFS client at boot. `iscsid` must run on the host, because the node plugin uses host networking and the host's iSCSI daemon. Ubuntu's AWS kernel ships `iscsi_tcp` but does not load it: the node plugin now loads it on the host when it starts, and lvmo uses its own initiator name rather than the host's ([docs/nodes.md](../../docs/nodes.md)), so the two `iscsi_tcp` lines only matter for images older than that.
 
 ### 2. The storage server's identity and network
 
@@ -182,6 +182,8 @@ helm upgrade --install lvmo charts/lvmo-csi -n lvmo-system \
  --set image.repository=michaelcourcy/lvmo-csi --set-string image.tag=$version --wait --timeout 5m
 KUBE_CONTEXT=$context API_ENDPOINT=$private:50051 bash scripts/install-storageclasses.sh
 ```
+
+The chart comes from the source tree. If `$version` is a release older than the node plugin's iSCSI check (`v0.1.0-alpha.3` and earlier), its image has no `--check-node` and the `node-check` init container fails: add `--set nodeCheck.iscsi=false`, or deploy a development image as in **Deploy a code change**.
 
 ### Optional: performance storage
 

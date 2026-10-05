@@ -20,6 +20,15 @@ sidecars:
   resizer: registry.k8s.io/sig-storage/csi-resizer:v2.0.0
   registrar: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.15.0
 
+# Before the node plugin starts on a node, check that the node can serve iSCSI
+# volumes: the host's iscsid answers and the iscsi_tcp module can be loaded.
+# lvmo loads the module and uses its own initiator name, kept in
+# /var/lib/lvmo-node; the host only needs open-iscsi (docs/nodes.md). A node
+# that fails keeps its node plugin in Init until it is fixed. Set false only if
+# the cluster uses NFS volumes alone.
+nodeCheck:
+  iscsi: true
+
 # Only for nested Kind tests; leave empty on real Kubernetes nodes.
 iscsiHostProc: ""
 # Move workloads off a failed node without an out-of-service taint. A node is

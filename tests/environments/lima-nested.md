@@ -13,7 +13,7 @@ One Lima VM (Docker-rootful template) runs the lvmo-csi API, NFS server and iSCS
 ## Cannot provide
 
 - `storage-server-reboot`: rebooting the storage server also reboots the cluster, so the scenario no longer tests what it should.
-- `multi-node`, `distinct-initiators`, `node-power-control`: all Kind nodes share the VM's kernel and initiator.
+- `multi-node`, `distinct-initiators`, `node-power-control`: all Kind nodes share the VM's kernel and `iscsid`, although lvmo gives each its own initiator name.
 - `kubevirt`, `openshift`.
 
 ## Preflight

@@ -222,11 +222,12 @@ helm upgrade --install lvmo ./lvmo-csi.tgz -n lvmo-system \
   --set image.repository=michaelcourcy/lvmo-csi \
   --set-string image.tag="$LVMO_VERSION" \
   --set image.pullPolicy=Always \
+  --set nodeCheck.iscsi=false \
   --wait --timeout 5m
 kubectl -n lvmo-system get pods
 ```
 
-Leave `apiEndpoint` and `iscsiHostProc` unset. Each StorageClass selects its storage server; this layout does not use the nested-Kind iSCSI helper.
+Leave `apiEndpoint` and `iscsiHostProc` unset. `nodeCheck.iscsi=false` skips the node plugin's iSCSI check: Kind on Docker Desktop has no iSCSI initiator, so this layout uses NFS volumes only. Charts older than the check ignore the value. Each StorageClass selects its storage server; this layout does not use the nested-Kind iSCSI helper.
 
 ```sh
 kubectl apply -f - <<'YAML'

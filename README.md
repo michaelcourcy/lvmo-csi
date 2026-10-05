@@ -114,7 +114,7 @@ helm upgrade --install lvmo charts/lvmo-csi -n lvmo-system --create-namespace \
 kubectl apply -f tests/storageclasses.yaml  # example only: edit endpoint and VG names first
 ```
 
-Each real Kubernetes node needs a running host `iscsid`, an initiator name in `/etc/iscsi/initiatorname.iscsi`, NFS client support, and network access to the server. The privileged node plugin mounts host devices and the kubelet directory. `iscsiHostProc` is exclusively for nested Kind testing; leave it empty on real nodes.
+Each real Kubernetes node needs a running host `iscsid` (the `open-iscsi` package) and network access to the server: [Prepare the Kubernetes nodes](docs/nodes.md) gives the commands per platform. The node plugin loads `iscsi_tcp` on the host and uses its own initiator name, generated once per node and kept in `/var/lib/lvmo-node`, so nodes cloned from one image never share one. It checks the node when it starts (`nodeCheck.iscsi`, on by default) and stays in `Init` on a node without `iscsid`; set `nodeCheck.iscsi=false` on a cluster that uses only NFS volumes. The privileged node plugin mounts host devices and the kubelet directory. `iscsiHostProc` is exclusively for nested Kind testing; leave it empty on real nodes.
 
 StorageClass parameters: `endpoint` (required API host:port), `protocol` (`nfs`, default, or `iscsi`), `vg` (required with multiple VGs on that server), and `filesystem` (`ext4`, default, or `xfs`). One driver installation can manage several storage VMs:
 

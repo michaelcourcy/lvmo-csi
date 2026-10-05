@@ -27,7 +27,11 @@ func main() {
 	api := flag.String("api-endpoint", "", "optional default API endpoint for legacy handles and standalone testing")
 	node := flag.String("node-id", "", "node identity")
 	failoverTimeout := flag.Duration("failover-timeout", 0, "controller only: move workloads off a node that Kubernetes and the storage servers have lost for this long (0 disables)")
+	checkNode := flag.Bool("check-node", false, "check this node's iSCSI prerequisites, then exit (non-zero if one is missing)")
 	flag.Parse()
+	if *checkNode {
+		os.Exit(runNodeCheck(*node))
+	}
 	discover, e := routing.KubernetesDiscovery(driver.Name)
 	if e != nil {
 		log.Fatal(e)
@@ -39,7 +43,16 @@ func main() {
 	defer router.Close()
 	nodeID := ""
 	if *node != "" {
-		nodeID = driver.NodeID(*node, driver.Initiator())
+		initiator, err := driver.NodeInitiator(*node)
+		if err != nil {
+			log.Fatal(err)
+		}
+		nodeID = driver.NodeID(*node, initiator)
+		load, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err = driver.LoadISCSIModule(load); err != nil {
+			log.Printf("iSCSI volumes will fail on this node: %v", err)
+		}
+		cancel()
 	}
 	d := &driver.Driver{API: router, NodeID: nodeID, Version: version}
 	ctx, stop := context.WithCancel(context.Background())
@@ -82,4 +95,30 @@ func main() {
 	if e = s.Serve(l); e != nil {
 		log.Fatal(e)
 	}
+}
+
+func runNodeCheck(node string) int {
+	var peers func(context.Context) (map[string]string, error)
+	client, e := kube.InCluster()
+	if e != nil {
+		log.Printf("warning: cannot read other nodes: %v", e)
+	} else if client != nil {
+		peers = func(ctx context.Context) (map[string]string, error) { return driver.Initiators(ctx, client.Get) }
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	problems, warnings := driver.CheckNode(ctx, driver.HostNodeCheck(node, peers))
+	for _, w := range warnings {
+		log.Printf("warning: %s", w)
+	}
+	if len(problems) > 0 {
+		log.Printf("node %s cannot serve lvmo iSCSI volumes:", node)
+		for _, p := range problems {
+			log.Printf("- %s", p)
+		}
+		return 1
+	}
+	initiator, _ := driver.NodeInitiator(node)
+	log.Printf("node %s is ready for lvmo iSCSI volumes (initiator %s)", node, initiator)
+	return 0
 }
