@@ -26,7 +26,7 @@ lvmo is meant to be easy to protect with Kasten. A Kasten policy must snapshot l
 4. Record the restore points: one local, one exported.
 5. Change the data: delete the text files and overwrite the random files.
 6. **Local restore**: restore the namespace from the local restore point, replacing the existing application. Wait for the RestoreAction to complete and the Deployment to be Ready. Compute the checksums.
-7. Retire the local restore point through Kasten, then delete namespace `lvmo-kasten-app`, so that only the exported copy can be used. Deleting the RestorePointContent directly leaves Kasten snapshot clones behind with policy Retain.
+7. Retire the local restore point, then delete namespace `lvmo-kasten-app`, so that only the exported copy can be used. Kasten retires a restore point when its RestorePointContent is deleted; deleting only the RestorePoint retires nothing. Delete the local restore point's RestorePointContent (not the exported one, which step 8 needs), wait for its RetireAction to complete, and check that no VolumeSnapshot and no lvmo snapshot of the application is left. On 2026-10-04 (Kasten 9.0.6), after the restore of step 6, two Kasten snapshot clones with policy Retain were left behind at this point: look for them too.
 8. **Remote restore**: recreate namespace `lvmo-kasten-app`, create a RestorePoint in it bound to the exported RestorePointContent (`spec.restorePointContentRef`), and restore from that RestorePoint. Wait for the RestoreAction to complete and the Deployment to be Ready. Compute the checksums.
 
 ## Expected
@@ -48,4 +48,4 @@ Passed on `eks-paris` on 2026-10-04 with Kasten 9.0.6: backup 20 s, export 40 s,
 
 ## Cleanup
 
-- Delete namespace `lvmo-kasten-app`, the policy, the restore points and the profile. Empty and delete the bucket and its credentials if the run created them. Check on the storage server that no lvmo volume or snapshot remains once Kasten has retired its snapshots.
+- Delete the policy, then retire the remaining restore points by deleting their RestorePointContents (`-l k10.kasten.io/appNamespace=lvmo-kasten-app`) and waiting for the RetireActions to complete. Delete namespace `lvmo-kasten-app` and the profile. Empty and delete the bucket and its credentials if the run created them. Check on the storage server that no lvmo volume or snapshot remains once Kasten has retired its snapshots.

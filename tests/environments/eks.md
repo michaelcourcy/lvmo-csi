@@ -258,6 +258,28 @@ Only for the striped variant of [performance-nvme-parallel](../scenarios/perform
   A plain VG without `-i 5` would place the pool on the volumes one after the other, and a small test would use only the first one.
 - StorageClasses `lvmo-striped-iscsi` and `lvmo-striped-nfs` (`vg: lvmo-striped`).
 
+### Optional: Kasten and an export bucket (`kasten`, `object-storage`)
+
+- **EBS CSI driver**, if the cluster was created without the `aws-ebs-csi-driver` add-on: give the driver its own role through the cluster's OIDC provider, then add it.
+  ```sh
+  eksctl utils associate-iam-oidc-provider --cluster lvmo-test --region eu-west-3 --approve
+  eksctl create iamserviceaccount --cluster lvmo-test --region eu-west-3 --namespace kube-system --name ebs-csi-controller-sa \
+   --role-name lvmo-test-ebs-csi --role-only --attach-policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy --approve
+  eksctl create addon --cluster lvmo-test --region eu-west-3 --name aws-ebs-csi-driver \
+   --service-account-role-arn arn:aws:iam::$(aws sts get-caller-identity --query Account --output text):role/lvmo-test-ebs-csi
+  ```
+- **Bucket and credentials**: a private bucket in the cluster's region, and an IAM user whose inline policy allows only that bucket (list, get, put and delete objects, plus the bucket's location, versioning and object lock reads). Pipe the access key straight into the secret, so that it is never written to a file:
+  ```sh
+  kubectl create namespace kasten-io
+  aws iam create-access-key --user-name <user> --output json \
+   | jq -r '"aws_access_key_id=\(.AccessKey.AccessKeyId)\naws_secret_access_key=\(.AccessKey.SecretAccessKey)"' \
+   | kubectl -n kasten-io create secret generic <secret> --type=secrets.kanister.io/aws --from-env-file=/dev/stdin
+  ```
+- **Kasten**: `helm install k10 kasten/k10 -n kasten-io --set global.persistence.storageClass=<class> --wait`. For performance runs, put Kasten's own PVCs on EBS, not on lvmo, so that they do not load the storage server being measured. Kasten's free edition covers up to 5 nodes.
+- A location profile (`config.kio.kasten.io/v1alpha1` `Profile`, `type: Location`, `objectStoreType: S3`) referring to the secret, and VolumeSnapshotClasses annotated `k10.kasten.io/is-snapshot-class: "true"` for each CSI driver to protect (`lvmo-snapshots` is annotated by `scripts/install-storageclasses.sh`).
+- A RunAction for a policy must be created in `kasten-io`, the policy's namespace.
+- Delete: retire restore points through Kasten, delete policies and the profile, `helm uninstall k10 -n kasten-io`, delete the namespace and its EBS volumes, empty and delete the bucket, delete the IAM user's access key, inline policy and user.
+
 ### 5. The development image repository
 
 ```sh
