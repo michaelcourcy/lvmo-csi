@@ -38,7 +38,7 @@ lvmo is meant to be easy to protect with Kasten. A Kasten policy must snapshot l
 
 ## Validation
 
-Passed on `eks-paris` on 2026-10-04 with Kasten 9.0.6: backup 20 s, export 40 s, local and remote restores 2 minutes each, every checksum matching, no snapshot left on the storage server afterwards.
+Passed on `eks-paris` on 2026-10-04 with Kasten 9.0.6: backup 20 s, export 40 s, local and remote restores 2 minutes each, every checksum matching, no snapshot left on the storage server afterwards. Passed again on 2026-10-06 with Kasten 9.0.7 and ext4 formatted with `assume_storage_prezeroed`: backup 7 s, export 21 s, local restore 132 s, remote restore 101 s.
 
 ## Evidence
 

@@ -320,7 +320,7 @@ func (b *Backend) CreateVolume(ctx context.Context, r *pb.CreateVolumeRequest) (
 	}
 	if src == "" && fs != "" {
 		if fs == "ext4" {
-			err = b.cmd(ctx, "mkfs.ext4", "-F", device(vg, id))
+			err = b.mkfsExt4(ctx, vg, device(vg, id))
 		} else {
 			err = b.cmd(ctx, "mkfs.xfs", "-f", device(vg, id))
 		}
@@ -352,6 +352,24 @@ func (b *Backend) CreateVolume(ctx context.Context, r *pb.CreateVolumeRequest) (
 		return nil, internal(err)
 	}
 	return proto.Clone(v).(*pb.Volume), nil
+}
+// mkfsExt4 formats a new thin LV. Without assume_storage_prezeroed, ext4 leaves
+// its inode tables to ext4lazyinit, which zeroes them after the first mount: on
+// iSCSI, LIO emulates those WRITE SAME commands as hundreds of thousands of
+// small writes per volume, because thin LVs do not support write zeroes. The
+// option is safe only when the pool zeroes newly provisioned chunks; older
+// e2fsprogs (before 1.47) reject it, and the volume is then formatted as before.
+func (b *Backend) mkfsExt4(ctx context.Context, vg, dev string) error {
+	if b.poolZeroes(ctx, vg) {
+		if err := b.cmd(ctx, "mkfs.ext4", "-F", "-E", "assume_storage_prezeroed=1", dev); err == nil || ctx.Err() != nil {
+			return err
+		}
+	}
+	return b.cmd(ctx, "mkfs.ext4", "-F", dev)
+}
+func (b *Backend) poolZeroes(ctx context.Context, vg string) bool {
+	out, err := b.run.Run(ctx, "lvs", "--noheadings", "--binary", "-o", "zero", vg+"/"+b.cfg.Pool)
+	return err == nil && strings.TrimSpace(string(out)) == "1"
 }
 func (b *Backend) lvSize(ctx context.Context, vg, id string) (int64, error) {
 	out, e := b.run.Run(ctx, "lvs", "--noheadings", "--units", "b", "--nosuffix", "-o", "lv_size", device(vg, id))

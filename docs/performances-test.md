@@ -21,7 +21,7 @@ This holds under these conditions:
 - **The server's CPU, network and RAM count as well as its disks.** The iSCSI target and the NFS server run in its kernel: a 2-vCPU server was close to CPU-bound at 50 000 IOPS. On a server with more RAM than data, NFS reads can exceed the disks thanks to the page cache.
 - **NFS needs enough server threads.** With Ubuntu's default of 8 NFS server threads, NFS random I/O stopped far below disks of ordinary latency (2 895 IOPS on the striped volumes); with 64 it reached them (8 626). `scripts/setup-vm.sh` does not set this yet.
 - **NFS random writes cost more than iSCSI's**: 1.5 to 3 disk writes per client write (ext4's journal and metadata on the server), so NFS reaches a third to two thirds of iSCSI's random write IOPS on the same disks (33% on one gp3 volume, 58% on the stripe, 65% on NVMe).
-- **New iSCSI volumes generate millions of 1 KiB writes during their first minutes** (ext4 lazy initialization, emulated by the iSCSI target), taking the disks' IOPS from other volumes until it ends. A fix is proposed, not implemented yet.
+- **New iSCSI volumes generate millions of 1 KiB writes during their first minutes** (ext4 lazy initialization, emulated by the iSCSI target), taking the disks' IOPS from other volumes until it ends. Fixed since: lvmo formats ext4 with `assume_storage_prezeroed` (see [the NVMe section](#what-the-nvme-run-revealed-about-new-iscsi-volumes)).
 - **Latency**: lvmo adds about 100 µs per operation over the raw disk; under load, latency is the queueing of all volumes on the shared disks.
 - **This depends on the iSCSI queue bound** (`--iscsi-queue-depth`, since commit `e8c064b`). Without it, 20 iSCSI workloads on one overloaded disk collapsed instead of slowing down.
 - **What was not tested**: more than 630 MiB/s or 50 000 IOPS, real applications instead of fio, variance between runs (one run each), and on-premises hardware. The NVMe and striped servers were AWS stand-ins for on-premises servers.
@@ -318,7 +318,7 @@ The cause, checked on one new volume:
 
 The measured amount is about 290 MiB per volume, before the prefill started (small writes kept mixing with the prefill afterwards). The inode tables explain 160 MiB of it; the rest is not explained yet. At gp3's 3000 IOPS, 5.35 million writes take about 30 minutes, which matches the 25 minutes of small writes seen during the gp3 prefill. The ext4 lazy initialization suspected in [the queue-bound section](#bounding-iscsi-queues-so-that-an-overloaded-disk-degrades-gracefully) is confirmed as the main source, together with the way LIO turns it into small writes.
 
-The zeroing is useless: a new thin LV reads as zeros, and the pool zeroes newly provisioned chunks. A candidate fix is to format with `mkfs.ext4 -E assume_storage_prezeroed=1` (e2fsprogs 1.47 and later, the version in Ubuntu 24.04), which marks the inode tables as zeroed without writing them. It is not implemented yet and needs its own test.
+The zeroing is useless: a new thin LV reads as zeros, and the pool zeroes newly provisioned chunks. A candidate fix is to format with `mkfs.ext4 -E assume_storage_prezeroed=1` (e2fsprogs 1.47 and later, the version in Ubuntu 24.04), which marks the inode tables as zeroed without writing them. This is now what lvmo does when the pool zeroes new chunks. Scenario [iscsi-ext4-first-mount-writes](../tests/scenarios/iscsi-ext4-first-mount-writes.md) measured it on 2026-10-06: a new 4 GiB volume received 6 writes (4 KiB) in the 3 minutes after its first mount, instead of about 120 000.
 
 ## Limits of this run
 

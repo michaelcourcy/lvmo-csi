@@ -466,3 +466,58 @@ func TestZeroQueueDepthKeepsDefaults(t *testing.T) {
 		t.Fatal("unreasonable queue depth accepted")
 	}
 }
+
+// zeroingRunner reports the pool's zeroing flag and can reject the ext4
+// option as e2fsprogs older than 1.47 does.
+type zeroingRunner struct {
+	recordingRunner
+	zero         string
+	oldE2fsprogs bool
+}
+
+func (r *zeroingRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	out, err := r.recordingRunner.Run(ctx, name, args...)
+	call := name + " " + strings.Join(args, " ")
+	if strings.HasPrefix(call, "lvs ") && strings.Contains(call, "-o zero") {
+		return []byte("  " + r.zero + "\n"), nil
+	}
+	if r.oldE2fsprogs && strings.Contains(call, "assume_storage_prezeroed") {
+		return nil, errors.New("mkfs.ext4: Bad option(s) specified: assume_storage_prezeroed")
+	}
+	return out, err
+}
+
+func TestExt4SkipsLazyInitOnlyOnZeroingPool(t *testing.T) {
+	for _, c := range []struct {
+		name         string
+		zero         string
+		oldE2fsprogs bool
+		want         string
+	}{
+		{"zeroing pool", "1", false, "mkfs.ext4 -F -E assume_storage_prezeroed=1 /dev/vg/"},
+		{"pool without zeroing", "0", false, "mkfs.ext4 -F /dev/vg/"},
+		{"e2fsprogs before 1.47", "1", true, "mkfs.ext4 -F /dev/vg/"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := &zeroingRunner{zero: c.zero, oldE2fsprogs: c.oldE2fsprogs}
+			b := testBackend(t, r)
+			if _, err := b.CreateVolume(context.Background(), &pb.CreateVolumeRequest{Name: "fs", Bytes: 128 << 20, Protocol: "iscsi"}); err != nil {
+				t.Fatal(err)
+			}
+			if got := r.last("mkfs."); !strings.HasPrefix(got, c.want) {
+				t.Fatalf("last format %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestXFSFormatIsUnchanged(t *testing.T) {
+	r := &zeroingRunner{zero: "1"}
+	b := testBackend(t, r)
+	if _, err := b.CreateVolume(context.Background(), &pb.CreateVolumeRequest{Name: "xfs", Bytes: 128 << 20, Protocol: "iscsi", Filesystem: "xfs"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.last("mkfs."); !strings.HasPrefix(got, "mkfs.xfs -f /dev/vg/") {
+		t.Fatalf("unexpected format %q", got)
+	}
+}
