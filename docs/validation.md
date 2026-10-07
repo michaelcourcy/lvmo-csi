@@ -1,6 +1,6 @@
 # Validation
 
-Validation performed on 27 September 2026. This is an evaluation implementation, not a production certification.
+Baseline validation performed on 27 September 2026; Kasten block-export results added from 6–7 October 2026. This is an evaluation implementation, not a production certification.
 
 | Check | Environment | Result |
 | --- | --- | --- |
@@ -27,6 +27,19 @@ The external suite excludes disruptive, serial, slow, performance and stress tes
 
 The baseline local full run (`scripts/e2e.sh local`) passed all suites and cleanup. After adding per-StorageClass routing, `scripts/e2e.sh local metadata sanity snapshots external` passed all functional suites in a fresh Lima/Kind environment: both sanity suites (67 each), both snapshot suites, all metadata modes, the two-backend acceptance test, and 40 upstream NFS tests. The final cleanup audit timed out: one deleted NFS volume remained mounted because the server retained a delegation for a client in courtesy state. Its durable deletion tombstone remained present; it was no longer exported. Consequently, the overall harness exited nonzero. The two-backend test's own physical cleanup had passed. This delayed NFS reclamation needs further work; the disposable VM was removed after preserving the reports. Azure sanity, snapshot, metadata, and external acceptance were validated across separate runs while fixing the harness. The final external rerun used `scripts/e2e.sh azure external`. Its 38 tests and physical cleanup audit passed; a missing final success marker caused the wrapper to exit nonzero, and the marker propagation was then corrected and checked separately. Logs and report archives are under `.test/reports/` (not committed).
 
-Kasten export/restore, `preferred` fallback, and Kasten consumption of KEP-3314 remain unvalidated. Passing the independent metadata client does not establish Kasten interoperability. Production load, thin-pool exhaustion recovery, server failure/fencing, and long-running durability testing remain outside this initial validation.
+The [Kasten block-mode scenario](../tests/scenarios/kasten-block-mode-export.md) ran on EKS (`eks-paris`) on 6–7 October 2026 with Kasten 9.0.7 and lvmo commit `c6bf41d`:
+
+| Check | Result |
+| --- | --- |
+| iSCSI Filesystem PVC, full block export and object-storage restore | Passed: 340,000,000 PostgreSQL accounts restored |
+| Same PVC after deleting 20%, block export and object-storage restore | Passed: 272,000,000 accounts restored, zero in the deleted range |
+| NFS Filesystem PVC, full block export through annotated iSCSI class | Passed: temporary clone and data mover used iSCSI Block access |
+| Direct restore of that block export to NFS | Unsupported in this path: raw Block attachment rejected with `NFS requires filesystem access`; restore cancelled |
+| NFS after-deletion export/restore | Not run after the full restore limitation was established |
+| Storage cleanup audit | Passed; no managed volumes, snapshots, leases or tagged LVs remained |
+
+This was not a full pass of the original NFS round-trip scenario. The NFS-source export was not restored onto an iSCSI application PVC, and manual LV rebinding to NFS was not tested. Run evidence is in `.test/reports/2026-10-06-eks-paris-kasten-block-mode-export.md` (not committed). Use ordinary filesystem export when the recovered application must use NFS.
+
+Kasten `preferred` fallback and consumption of KEP-3314 remain unvalidated. Passing the independent metadata client does not establish Kasten interoperability. Production load, thin-pool exhaustion recovery, server failure/fencing, and long-running durability testing remain outside this initial validation.
 
 Release files are in `dist/`; building them does not publish a GitHub release or Docker Hub tag.

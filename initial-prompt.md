@@ -107,6 +107,8 @@ The block offsets returned for a snapshot must identify the same bytes in the iS
 
 Validate ordinary filesystem snapshot backup and restore without CBT for both NFS and iSCSI filesystem volumes. Separately validate Kasten raw-block export and restore for both protocols, including native block sources and filesystem sources opting into block export. Validate the CBT full-backup, incremental-backup, and restore workflow using an independent test client; add Kasten CBT integration tests once support and configuration are confirmed. Verify that unannotated filesystem PVCs retain the default filesystem export behavior and that `preferred` permits filesystem fallback when block export is unavailable. Verify restored data, metadata-to-clone offset correspondence, and cleanup after failures. Passing the standard CSI suites alone does not demonstrate this backup integration.
 
+Evaluation note (7 October 2026): the original raw-block round-trip objective above is not supported for an NFS restore target in the tested Kasten 9.0.7 integration. NFS block export through iSCSI succeeded, but restore required raw access unavailable through NFS. The [revised scenario](tests/scenarios/kasten-block-mode-export.md) records iSCSI recovery and this NFS limitation separately. Ordinary filesystem export remains the path for preserving NFS on recovery; the original objective is not a claim of implemented support.
+
 The decision to omit authentication between the CSI driver and the lvmo-csi API does not remove the authentication, authorization, and TLS requirements of the KEP-3314 external snapshot metadata service.
 
 # Deployment 

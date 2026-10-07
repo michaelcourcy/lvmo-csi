@@ -24,7 +24,9 @@ lvmo's place is not the hyperscalers (even if they are handy for testing), but t
 
 lvmo is designed with Kasten by Veeam in mind. Snapshots in an LVM thin pool are very light and quick to create and delete, which shortens exports. The same is true for clones.
 
-It also implements KEP-3314 (changed block tracking), so that block-mode exports can be incremental. Even an NFS volume can be exported in block mode.
+It implements KEP-3314 (changed block tracking), exposing ranges that a compatible backup client can use for incremental copies. Kasten consumption of these ranges remains unvalidated.
+
+Kasten 9.0.7 block-mode export and restore were validated for iSCSI Filesystem volumes, including a restore after deleting 20% of a PostgreSQL database. NFS volumes can be block-exported through an alternate iSCSI class, but direct restore to NFS is unsupported in the tested path: the restore data mover needs raw block access. Use ordinary filesystem export when recovery must preserve NFS. See the [scenario and observed limitation](tests/scenarios/kasten-block-mode-export.md).
 
 ## Architecture
 
