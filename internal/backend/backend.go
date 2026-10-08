@@ -43,8 +43,11 @@ func (Exec) Run(ctx context.Context, name string, args ...string) ([]byte, error
 
 type Config struct {
 	Root, Server, Pool, Clients string
-	NFSInsecure                 bool
-	VGs                         []string
+	// ISCSIListenAddress selects an explicit local portal (Pod IP behind a Service).
+	// Empty preserves targetcli's default portal for standalone servers.
+	ISCSIListenAddress string
+	NFSInsecure        bool
+	VGs                []string
 	// ISCSIQueueDepth bounds the commands in flight per iSCSI session, on the
 	// target and (through GetVolume) on the node, so that an overloaded disk
 	// queues work instead of timing commands out. 0 keeps the defaults.
@@ -353,6 +356,7 @@ func (b *Backend) CreateVolume(ctx context.Context, r *pb.CreateVolumeRequest) (
 	}
 	return proto.Clone(v).(*pb.Volume), nil
 }
+
 // mkfsExt4 formats a new thin LV. Without assume_storage_prezeroed, ext4 leaves
 // its inode tables to ext4lazyinit, which zeroes them after the first mount: on
 // iSCSI, LIO emulates those WRITE SAME commands as hundreds of thousands of
@@ -440,6 +444,14 @@ func (b *Backend) publish(ctx context.Context, v *pb.Volume) error {
 	if err := b.cmd(ctx, "targetcli", target, "ls"); err != nil {
 		if err = b.cmd(ctx, "targetcli", "/iscsi", "create", v.Iqn); err != nil {
 			return err
+		}
+	}
+	if address := b.cfg.ISCSIListenAddress; address != "" {
+		portals := target + "/tpg1/portals"
+		if b.cmd(ctx, "targetcli", portals+"/"+address+":3260", "ls") != nil {
+			if err := b.cmd(ctx, "targetcli", portals, "create", address, "3260"); err != nil {
+				return err
+			}
 		}
 	}
 	if b.cmd(ctx, "targetcli", target+"/tpg1/luns/lun0", "ls") != nil {

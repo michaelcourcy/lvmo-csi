@@ -9,15 +9,29 @@ if [[ ${1:-serve} == guard ]]; then
   echo 'Backend state empty; removal permitted'
   exit
 fi
-clients=${NFS_CLIENTS:?}
+# Use the stable Service IP for data mounts; host iscsid need not resolve cluster DNS.
+# Service DNS resolves before readiness (this is not a headless Service).
+service_name=${SERVER:?}
+SERVER=$(getent ahostsv4 "$service_name" | awk 'NR == 1 {print $1}')
+[[ -n "$SERVER" ]] || { echo 'Cannot resolve storage Service'; exit 1; }
+clients='*'
+[[ ${POD_IP:?} =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || {
+  echo 'The test storage server requires an IPv4 Pod IP'; exit 1;
+}
 mkdir -p "$root/state"
 exec 9>"$root/server.lock"
 flock -n 9 || { echo 'Backing store already owned'; exit 1; }
-identity="$VG $SERVER"
+identity="$VG $service_name"
 if [[ -f "$root/identity" ]]; then
   [[ $(cat "$root/identity") == "$identity" ]] || { echo 'Backing store identity changed'; exit 1; }
 else
   printf '%s\n' "$identity" >"$root/identity"
+fi
+# Never silently retarget existing data after someone deletes/recreates the Service.
+if [[ -f "$root/state/state.json" ]]; then
+  jq -e --arg server "$SERVER" '[.volumes // {} | .[] | .server == $server] | all' "$root/state/state.json" >/dev/null || {
+    echo 'Storage Service address changed while volumes remain'; exit 1;
+  }
 fi
 modprobe loop
 modprobe dm_thin_pool
@@ -54,9 +68,19 @@ vgs "$vg"
 lvs "$vg/lvmo-pool"
 touch "$root/initialized"
 vgchange -ay "$vg"
-# This test mode reserves a dedicated node; no other NFS/LIO server may use it.
 mkdir -p /run/dbus
 dbus-daemon --system --fork
+# LIO configfs is host-wide. Bind only this Pod's IP, never a shared wildcard.
+targetcli set global auto_add_default_portal=false
+# A previous Pod may have left targets whose sockets belong to its old network
+# namespace. Recreate only this backend's targets before API reconciliation.
+if [[ -f "$root/state/state.json" ]]; then
+  while read -r iqn; do
+    if targetcli "/iscsi/$iqn" ls >/dev/null 2>&1; then
+      targetcli /iscsi delete "$iqn"
+    fi
+  done < <(jq -r '.volumes // {} | .[] | .iqn // empty | select(length > 0)' "$root/state/state.json")
+fi
 rpcbind || true
 if [[ $(cat /proc/fs/nfsd/threads) != 0 ]]; then rpc.nfsd 0; fi
 rpc.nfsd -N 3 8
@@ -95,6 +119,6 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 0' TERM INT
-/usr/local/bin/lvmo-csi -P=50061 --root="$root/state" --server="$SERVER" --nfs-clients="$clients" "$vg" 9>&- &
+/usr/local/bin/lvmo-csi -P=50061 --root="$root/state" --server="$SERVER" --nfs-clients="$clients" --iscsi-listen-address="$POD_IP" "$vg" 9>&- &
 api=$!
 wait -n "$api" "$mountd"

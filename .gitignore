@@ -2,6 +2,7 @@
 /dist/
 /.test/
 /.vscode/
+/docs/next-priorities.md
 *.log
 .DS_Store
 .claude/settings.local.json

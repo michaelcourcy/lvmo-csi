@@ -1,6 +1,6 @@
 # Validation
 
-Baseline validation performed on 27 September 2026; Kasten block-export results added from 6–7 October 2026. This is an evaluation implementation, not a production certification.
+Baseline validation performed on 27 September 2026; Kasten block-export results added from 6–7 October 2026 and Pod-network storage-server results from 9 October 2026. This is an evaluation implementation, not a production certification.
 
 | Check | Environment | Result |
 | --- | --- | --- |
@@ -21,6 +21,7 @@ Baseline validation performed on 27 September 2026; Kasten block-export results 
 | CSI reconstruction and failed-create recovery | Azure Ubuntu 24.04 AMD64 | Passed |
 | Physical cleanup | Azure after upstream external suite | No managed volumes, snapshots, node leases, tagged LVs, or project iSCSI resources remained |
 | Per-StorageClass backend routing | Kind; two API processes and independent LVM pools on one Lima VM | Driver restart discovery, capacity, snapshot metadata, cross-backend clone rejection, second-backend NFS-to-iSCSI backup, isolation and physical cleanup passed |
+| PVC-backed Pod-network storage server | EKS 1.35.8 / Ubuntu 24.04 AMD64, EBS gp3 | Cross-node NFS/iSCSI, snapshot restores, changed Pod IPs behind a stable Service, mounted-client recovery, lifecycle guards and cleanup passed |
 | Release builds | Linux AMD64 and ARM64 | Executables and multiarchitecture OCI image archive built locally |
 
 The external suite excludes disruptive, serial, slow, performance and stress tests. The local run reported 7,626 skipped specs; the OpenShift run reported 6,863. These include unrelated Kubernetes tests and unsupported driver capabilities; they are not passes. External-suite coverage above is for NFS. Both protocols have separate sanity and snapshot coverage.
@@ -40,6 +41,10 @@ The [Kasten block-mode scenario](../tests/scenarios/kasten-block-mode-export.md)
 
 This was not a full pass of the original NFS round-trip scenario. The NFS-source export was not restored onto an iSCSI application PVC, and manual LV rebinding to NFS was not tested. Run evidence is in `.test/reports/2026-10-06-eks-paris-kasten-block-mode-export.md` (not committed). Use ordinary filesystem export when the recovered application must use NFS.
 
-Kasten `preferred` fallback and consumption of KEP-3314 remain unvalidated. Passing the independent metadata client does not establish Kasten interoperability. Production load, thin-pool exhaustion recovery, server failure/fencing, and long-running durability testing remain outside this initial validation.
+The [Pod storage-server scenario](../tests/scenarios/pod-storage-server.md) passed all nine steps on `eks-paris` on 9 October 2026, using commit `eb862f4` plus the Pod-network/Service changes. A startup-order bug was fixed by starting D-Bus before targetcli, followed by a clean rerun. Both protocols preserved 16MiB file hashes through snapshots and graceful server replacement. The Service IP stayed fixed while Pod IPs changed; existing mounted consumers recovered and accepted new writes within 3 seconds for iSCSI and 92 seconds for NFS after API readiness. Unchanged upgrades, nonempty/unreachable removal guards, and empty disable/re-enable with the same VG UUID passed. Cleanup removed test volumes, kernel storage objects and temporary cloud resources while retaining the original cluster and workers. Evidence: `.test/reports/2026-10-09-eks-paris-pod-storage-server.md` (not committed).
+
+This EKS result does not validate the revised Kind host-route path, NFS lock/delegation reclaim, or abrupt node loss. NFS client recovery tracking was unavailable in the tested container; the observed recovery covers file I/O after graceful replacement.
+
+Kasten `preferred` fallback and consumption of KEP-3314 remain unvalidated. Passing the independent metadata client does not establish Kasten interoperability. Production load, thin-pool exhaustion recovery, abrupt server failure/fencing, and long-running durability testing remain outside this initial validation.
 
 Release files are in `dist/`; building them does not publish a GitHub release or Docker Hub tag.

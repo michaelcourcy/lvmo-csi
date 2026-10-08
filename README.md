@@ -141,7 +141,7 @@ Without a taint, lvmo fails over by itself (chart value `failover.enabled`, on b
 
 ## Backups and changed block tracking
 
-Ordinary filesystem snapshot restores remain the default. The optional block path creates an iSCSI `volumeMode: Block` PVC from a snapshot, including snapshots of NFS PVCs. It preserves the filesystem's raw bytes and never formats or mounts the backup clone. The VolumeSnapshotContent must permit filesystem-to-block conversion with `snapshot.storage.kubernetes.io/allow-volume-mode-change: "true"`.
+Ordinary filesystem snapshot restores remain the default. The optional block path creates an iSCSI `volumeMode: Block` PVC from a snapshot, including snapshots of NFS PVCs. It preserves the filesystem's raw bytes and never formats or mounts the backup clone. The VolumeSnapshotContent must permit filesystem-to-block conversion with `snapshot.storage.kubernetes.io/allow-volume-mode-change: "true"`. This describes the backup export path only. In the tested Kasten 9.0.7 integration, restoring such an export directly to NFS is not possible: restoration requires raw block access, so the restore target must use iSCSI. Restoring an NFS-source export to iSCSI has not been validated and would change the application's storage protocol. Use ordinary filesystem export when recovery must preserve NFS.
 
 See [validated capabilities and limits](docs/validation.md) and [metadata deployment and semantics](docs/metadata.md) for TLS, RBAC, discovery, independent verification, and Kasten configuration boundaries.
 

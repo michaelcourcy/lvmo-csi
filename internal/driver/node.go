@@ -275,9 +275,9 @@ func (d *Driver) NodeStageVolume(ctx context.Context, r *csi.NodeStageVolumeRequ
 		if e = ensureIface(ctx, iface, initiator); e != nil {
 			return nil, e
 		}
-		// Discovery through lvmo's iface binds the node records to it, and
-		// presents lvmo's initiator, which the target's access list admits.
-		if e = run(ctx, "iscsiadm", "-m", "discovery", "-t", "sendtargets", "-p", portal, "-I", iface); e != nil {
+		// The API already supplies the IQN and client-facing portal. Discovery
+		// behind a Service would return the target's transient Pod IP instead.
+		if e = ensureISCSINode(ctx, portal, v.Iqn, iface); e != nil {
 			return nil, e
 		}
 		// Match the target's session window, so that an overloaded storage
@@ -590,4 +590,15 @@ func (d *Driver) SendHeartbeats(ctx context.Context, interval time.Duration) {
 		case <-time.After(interval):
 		}
 	}
+}
+
+// Reuse an existing node record so retries retain its session settings.
+func ensureISCSINode(ctx context.Context, portal, iqn, iface string) error {
+	args := []string{"-m", "node", "-T", iqn, "-p", portal, "-I", iface}
+	if err := nodeCommand(ctx, "iscsiadm", args...).Run(); err == nil {
+		return nil
+	} else if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 21 {
+		return status.Errorf(codes.Internal, "inspect iSCSI node record: %v", err)
+	}
+	return run(ctx, "iscsiadm", append(args, "-o", "new")...)
 }

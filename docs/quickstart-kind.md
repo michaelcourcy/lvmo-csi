@@ -1,6 +1,8 @@
 # Quickstart: lvmo entirely inside Kind
 
-Validated on 8 October 2026 in an Ubuntu 24.04 ARM64 Lima VM. This guide runs
+The previous host-network version was validated on 8 October 2026 in an Ubuntu
+24.04 ARM64 Lima VM. The Pod-network/Service version awaits runtime validation.
+This guide runs
 a single test storage-server Pod backed
 by Kind's local-path provisioner, then exposes NFS and iSCSI StorageClasses.
 It is for a dedicated Linux host or VM, not production or failure testing.
@@ -62,24 +64,52 @@ storage directory. This avoids placing the backing PVC on a container overlay.
 The host iSCSI daemon is shared; this is not an independent-initiator test.
 
 The generated `.test/kind/values.yaml` enables the server, requests a 5Gi source
-PVC on `standard`, pins the server to `lvmo-pod-control-plane`, and restricts NFS
-to that node's address. The loop image uses only part of the requested capacity,
+PVC on `standard`, and publishes the server through a ClusterIP Service. No node
+name or IP values are required. The local-path PV supplies node affinity. NFS
+exports use `*`; keep this test cluster reachable only by trusted clients. The loop image uses only part of the requested capacity,
 leaving space for filesystem and thin-pool metadata. Local-path storage does not
 enforce a PVC size quota, so the server sizes the image from the requested value.
 
+The script also adds a host route for the storage Service's single IPv4 address
+through the Kind node. The nested iSCSI helper uses the Linux host's `iscsid`,
+which otherwise cannot reach the cluster's Service network. Remove that route
+as shown below during cleanup. Ordinary Kubernetes workers do not need it.
+
+The creation script runs as root. Export the cluster context to your user's
+kubeconfig before running the following `kubectl` and `helm` commands without
+`sudo`:
+
 ```sh
-sudo kubectl --context kind-lvmo-pod -n lvmo-system get pods,pvc
-sudo kubectl --context kind-lvmo-pod get sc lvmo-test-sc-iscsi lvmo-test-sc-nfs
+mkdir -p ~/.kube
+sudo kind export kubeconfig --name lvmo-pod --kubeconfig "$HOME/.kube/config"
+sudo chown "$(id -u):$(id -g)" ~/.kube/config
+kubectl config use-context kind-lvmo-pod
+
+kubectl -n lvmo-system get pods,pvc
+kubectl get sc lvmo-test-sc-iscsi lvmo-test-sc-nfs
 ```
+
+For Bash, enable completion for `kubectl` and its `k` alias in the current shell:
+
+```sh
+sudo apt-get install -y bash-completion
+source /usr/share/bash-completion/bash_completion
+source <(kubectl completion bash)
+alias k=kubectl
+complete -o default -F __start_kubectl k
+```
+
+To keep this configuration in future Bash sessions, add the two `source` lines,
+the `alias` line, and the `complete` line to `~/.bashrc`.
 
 ## Try both protocols
 
 ```sh
-sudo kubectl --context kind-lvmo-pod apply -f examples/kind/workloads.yaml
-sudo kubectl --context kind-lvmo-pod -n lvmo-demo wait pod --all \
+kubectl apply -f examples/kind/workloads.yaml
+kubectl -n lvmo-demo wait pod --all \
   --for=condition=Ready --timeout=180s
 for protocol in iscsi nfs; do
-  sudo kubectl --context kind-lvmo-pod -n lvmo-demo exec "client-$protocol" -- \
+  kubectl -n lvmo-demo exec "client-$protocol" -- \
     sh -c "echo lvmo-$protocol > /data/proof; sync; cat /data/proof"
 done
 ```
@@ -93,7 +123,7 @@ inside the loop-backed pool, separate from its source PVC.
 Keep the saved values explicit on upgrades:
 
 ```sh
-sudo helm upgrade lvmo charts/lvmo-csi --kube-context kind-lvmo-pod \
+helm upgrade lvmo charts/lvmo-csi \
   -n lvmo-system -f .test/kind/values.yaml --wait
 ```
 
@@ -104,14 +134,23 @@ A refused uninstall can leave Helm's status as `uninstalling`; clean up the
 consumers and retry uninstall rather than attempting an ordinary upgrade.
 
 ```sh
-sudo kubectl --context kind-lvmo-pod delete namespace lvmo-demo
+kubectl delete namespace lvmo-demo
 # Wait until consumer PVs and snapshots are reclaimed; only the source PVC remains.
-sudo kubectl --context kind-lvmo-pod get pv
-sudo helm uninstall lvmo --kube-context kind-lvmo-pod -n lvmo-system --wait
+kubectl get pv
+# Save the Service address before Helm removes it.
+STORAGE_SERVICE_IP=$(kubectl -n lvmo-system get svc lvmo-storage -o jsonpath='{.spec.clusterIP}')
+helm uninstall lvmo -n lvmo-system --wait
+sudo ip route del "$STORAGE_SERVICE_IP/32"
 # The source PVC is deliberately retained. Delete it explicitly after checking cleanup.
-sudo kubectl --context kind-lvmo-pod -n lvmo-system delete pvc lvmo-storage
+kubectl -n lvmo-system delete pvc lvmo-storage
 sudo kind delete cluster --name lvmo-pod
 ```
 
 Keep the Linux VM for reuse, or delete it explicitly with
-`limactl delete lvmo-kind-pod` on the Mac once its data is no longer needed.
+
+```sh
+limactl stop lvmo-kind-pod
+limactl delete lvmo-kind-pod
+```
+
+on the Mac once its data is no longer needed.

@@ -1,8 +1,7 @@
 {{- $v := index .Values "create-storage-server" -}}
 {{- $name := printf "%s-storage" .Release.Name -}}
 {{- $old := lookup "apps/v1" "Deployment" .Release.Namespace $name -}}
-{{- $node := index $v "node-name" -}}
-{{- $address := index $v "server-address" -}}
+{{- $address := printf "%s.%s.svc" $name .Release.Namespace -}}
 {{- $prefix := index $v "dest-storage-class-prefix" -}}
 {{- $image := printf "%s:%s" $v.image.repository $v.image.tag -}}
 {{- $vg := printf "lvmo-%s" (sha256sum (printf "%s/%s" .Release.Namespace .Release.Name) | trunc 12) -}}
@@ -11,16 +10,34 @@
 {{- if gt (len $prefix) 55 }}{{ fail "destination prefix too long" }}{{ end }}
 {{- if not (regexMatch "^[1-9][0-9]*(Gi|G|Mi|M)$" $v.size) }}{{ fail "size must be a positive Kubernetes quantity, e.g. 5Gi" }}{{ end }}
 {{- $_ := required "source-storage-class is required" (index $v "source-storage-class") }}
-{{- $_ := required "node-name is required for stable test server placement" $node }}
-{{- $_ := required "server-address is required" $address }}
-{{- $_ := required "nfs-clients must explicitly restrict the test clients" (index $v "nfs-clients") }}
 {{- $_ := required "storage server image.repository is required" $v.image.repository }}
 {{- $source := lookup "storage.k8s.io/v1" "StorageClass" "" (index $v "source-storage-class") }}
 {{- if or (eq (index $v "source-storage-class") (printf "%s-nfs" $prefix)) (eq (index $v "source-storage-class") (printf "%s-iscsi" $prefix)) (and $source (eq $source.provisioner "lvmo.csi.io")) }}{{ fail "source StorageClass must be independent of lvmo" }}{{ end }}
 {{- if $old }}
 {{- $a := $old.metadata.annotations }}
-{{- if or (ne (index $a "lvmo.csi.io/source-class") (index $v "source-storage-class")) (ne (index $a "lvmo.csi.io/size") $v.size) (ne (index $a "lvmo.csi.io/prefix") $prefix) (ne (index $a "lvmo.csi.io/node") $node) (ne (index $a "lvmo.csi.io/address") $address) }}{{ fail "test server backing identity is immutable; clean up before migration" }}{{ end }}
+{{- if or (ne (index $a "lvmo.csi.io/source-class") (index $v "source-storage-class")) (ne (index $a "lvmo.csi.io/size") $v.size) (ne (index $a "lvmo.csi.io/prefix") $prefix) (ne (index $a "lvmo.csi.io/address") $address) }}{{ fail "test server backing identity is immutable; clean up before migration" }}{{ end }}
 {{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+spec:
+  type: ClusterIP
+  ipFamilyPolicy: SingleStack
+  ipFamilies: [IPv4]
+  selector:
+    app: {{ $name }}
+  ports:
+  - name: api
+    port: 50061
+    targetPort: 50061
+  - name: nfs
+    port: 2049
+    targetPort: 2049
+  - name: iscsi
+    port: 3260
+    targetPort: 3260
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -43,7 +60,6 @@ metadata:
     lvmo.csi.io/source-class: {{ index $v "source-storage-class" | quote }}
     lvmo.csi.io/size: {{ $v.size | quote }}
     lvmo.csi.io/prefix: {{ $prefix | quote }}
-    lvmo.csi.io/node: {{ $node | quote }}
     lvmo.csi.io/address: {{ $address | quote }}
 spec:
   replicas: 1
@@ -57,11 +73,11 @@ spec:
       labels:
         app: {{ $name }}
     spec:
-      hostNetwork: true
-      dnsPolicy: ClusterFirstWithHostNet
+      hostNetwork: false
+      dnsPolicy: ClusterFirst
       automountServiceAccountToken: false
       nodeSelector:
-        kubernetes.io/hostname: {{ $node | quote }}
+        kubernetes.io/os: linux
       terminationGracePeriodSeconds: 120
       containers:
       - name: server
@@ -76,8 +92,10 @@ spec:
           value: {{ $address | quote }}
         - name: BACKING_SIZE
           value: {{ $v.size | quote }}
-        - name: NFS_CLIENTS
-          value: {{ index $v "nfs-clients" | quote }}
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
         readinessProbe:
           tcpSocket:
             port: 50061
@@ -129,7 +147,6 @@ volumeBindingMode: Immediate
 {{/* Old deployment lookup keeps the upgrade guard when new values disable it. */}}
 {{- if or $v.enabled $old }}
 {{- if $old }}
-{{- $node = index $old.metadata.annotations "lvmo.csi.io/node" }}
 {{- $address = index $old.metadata.annotations "lvmo.csi.io/address" }}
 {{- $image = (index $old.spec.template.spec.containers 0).image }}
 {{- end }}
@@ -150,8 +167,15 @@ spec:
     spec:
       restartPolicy: Never
       automountServiceAccountToken: false
-      nodeSelector:
-        kubernetes.io/hostname: {{ $node | quote }}
+      {{- if not (and (eq $phase "pre-upgrade") $v.enabled) }}
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app: {{ $name }}
+            topologyKey: kubernetes.io/hostname
+      {{- end }}
       containers:
       - name: guard
         image: {{ $image | quote }}
@@ -165,6 +189,7 @@ spec:
           value: {{ $vg }}
         - name: SERVER
           value: {{ $address | quote }}
+        {{- if not (and (eq $phase "pre-upgrade") $v.enabled) }}
         volumeMounts:
         - name: backing
           mountPath: /backing
@@ -173,6 +198,7 @@ spec:
       - name: backing
         persistentVolumeClaim:
           claimName: {{ $name }}
+        {{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

@@ -21,6 +21,7 @@ func main() {
 	port := flag.String("P", "50051", "gRPC listen port")
 	root := flag.String("root", "/var/lib/lvmo", "state and mount directory")
 	server := flag.String("server", "", "NFS/iSCSI address reachable from Kubernetes nodes")
+	iscsiListen := flag.String("iscsi-listen-address", "", "local iSCSI portal address; requires targetcli auto_add_default_portal=false")
 	pool := flag.String("pool", "lvmo-pool", "existing thin pool name in every VG")
 	clients := flag.String("nfs-clients", "*", "NFS export client selector")
 	nfsInsecure := flag.Bool("nfs-insecure", false, "allow NFS clients to connect from unprivileged source ports")
@@ -37,7 +38,7 @@ func main() {
 		conn.Close()
 	}
 	log.Printf("advertising storage address %s", *server)
-	b, e := backend.New(backend.Config{Root: *root, Server: *server, Pool: *pool, Clients: *clients, NFSInsecure: *nfsInsecure, VGs: flag.Args(), ISCSIQueueDepth: *queueDepth, ISCSICommandTimeout: *commandTimeout}, backend.Exec{})
+	b, e := backend.New(backend.Config{Root: *root, Server: *server, ISCSIListenAddress: *iscsiListen, Pool: *pool, Clients: *clients, NFSInsecure: *nfsInsecure, VGs: flag.Args(), ISCSIQueueDepth: *queueDepth, ISCSICommandTimeout: *commandTimeout}, backend.Exec{})
 	if e != nil {
 		log.Fatal(e)
 	}

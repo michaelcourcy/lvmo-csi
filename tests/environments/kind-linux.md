@@ -24,7 +24,8 @@ assumptions here; use its separate Kind quickstart scenario.
 
 Check Docker and the VM are running, required kernel modules are available,
 Kind nodes are Ready, and no unrelated NFS or iSCSI target server occupies the
-host. Use explicit kube context `kind-lvmo-pod`.
+host. Verify the host route to the storage Service IP through the Kind node
+(`ip route get <Service-IP>`). Use explicit kube context `kind-lvmo-pod`.
 
 ## Deploy a code change
 
@@ -41,5 +42,6 @@ Record whether to retain the VM separately from the disposable Kind cluster.
 ## Delete
 
 Remove consumer PVCs/snapshots before uninstalling the Helm release; explicitly
-remove the retained backing PVC. Verify loop/VG/target cleanup before deleting
+remove the retained backing PVC and the storage Service-IP host route as shown
+in the quickstart. Verify loop/VG/target cleanup before deleting
 Kind. Keep or delete the Linux VM according to its instance lifecycle policy.

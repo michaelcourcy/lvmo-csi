@@ -20,7 +20,30 @@ Nobody needs SSH. The storage server is reached through AWS Systems Manager (Ses
 
 ## Preflight
 
-With `export AWS_REGION=eu-west-3 KUBECONFIG=~/.kube/lvmo-test-eks`:
+Select the kubeconfig and refresh its EKS entry before checking the cluster:
+
+```sh
+export AWS_REGION=eu-west-3 KUBECONFIG="$HOME/.kube/lvmo-test-eks"
+aws sts get-caller-identity
+aws eks update-kubeconfig \
+  --region "$AWS_REGION" \
+  --name lvmo-test \
+  --kubeconfig "$KUBECONFIG" \
+  --alias lvmo-test
+kubectl config current-context
+```
+
+`update-kubeconfig` refreshes the connection settings and selects the `lvmo-test`
+context. Setting `KUBECONFIG` alone only selects a file; its current context
+could still point to another cluster. Use the context recorded in the environment
+instance if it specifies a different alias.
+
+These commands require valid AWS credentials for an identity with access to the
+cluster. Refreshing kubeconfig does not renew an expired AWS login; if
+`aws sts get-caller-identity` fails, renew your AWS session first. `oc` can be used
+in place of `kubectl` for these checks.
+
+Then check:
 
 - `kubectl get nodes` shows 3 `Ready` nodes.
 - `kubectl -n lvmo-system get pods` shows the controller and 3 node pods ready.

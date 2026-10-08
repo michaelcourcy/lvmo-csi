@@ -68,6 +68,57 @@ func testBackend(t *testing.T, r Runner) *Backend {
 	}
 	return b
 }
+
+type portalRunner struct {
+	recordingRunner
+	present bool
+	fail    bool
+}
+
+func (r *portalRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	out, err := r.recordingRunner.Run(ctx, name, args...)
+	call := strings.Join(args, " ")
+	if strings.Contains(call, "/portals/") && !r.present {
+		return nil, errors.New("portal absent")
+	}
+	if strings.Contains(call, "/portals create") {
+		if r.fail {
+			return nil, errors.New("bind failed")
+		}
+		r.present = true
+	}
+	return out, err
+}
+
+func TestPodPortalIsSeparateFromAdvertisedService(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		r := &portalRunner{fail: fail}
+		b := testBackend(t, r)
+		b.cfg.ISCSIListenAddress = "10.244.1.7"
+		v := &pb.Volume{Id: "test-volume", Iqn: "iqn.test:volume", Vg: "vg", Protocol: "iscsi", Server: "10.96.0.42"}
+		err := b.publish(context.Background(), v)
+		if (err != nil) != fail {
+			t.Fatalf("bind failure=%v, error=%v", fail, err)
+		}
+		want := "targetcli /iscsi/iqn.test:volume/tpg1/portals create 10.244.1.7 3260"
+		if r.last("targetcli /iscsi/iqn.test:volume/tpg1/portals create") != want {
+			t.Fatal(r.calls)
+		}
+		if fail {
+			continue
+		}
+		r.calls = nil
+		if err := b.publish(context.Background(), v); err != nil {
+			t.Fatal(err)
+		}
+		if r.last("targetcli /iscsi/iqn.test:volume/tpg1/portals create") != "" {
+			t.Fatal("recreated an existing portal")
+		}
+		if v.Server != "10.96.0.42" {
+			t.Fatal("changed client-facing address")
+		}
+	}
+}
 func TestInterruptedCreateIsReclaimedBeforeRetry(t *testing.T) {
 	r := &recordingRunner{failCreate: true}
 	b := testBackend(t, r)

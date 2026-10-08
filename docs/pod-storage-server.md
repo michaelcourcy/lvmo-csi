@@ -7,9 +7,8 @@ automatic failover. It does not improve the durability or performance of the
 source storage.
 
 Build `Dockerfile.storage-server` into the test environment's registry. Set
-`TEST_NODE` and `TEST_SERVER_IP` to the dedicated worker name/address,
-`TEST_CLIENT_IP` to the allowed NFS client address (or an explicitly scoped CIDR),
-and `TEST_REGISTRY`/`TEST_SERVER_TAG` to that image. Install with:
+`TEST_REGISTRY`/`TEST_SERVER_TAG` to that image. No node name, server IP or NFS
+client IP is required. Install with:
 
 ```sh
 helm upgrade --install lvmo charts/lvmo-csi --namespace lvmo-csi --create-namespace \
@@ -17,9 +16,6 @@ helm upgrade --install lvmo charts/lvmo-csi --namespace lvmo-csi --create-namesp
   --set create-storage-server.source-storage-class=my-local-storageclass \
   --set create-storage-server.size=5Gi \
   --set create-storage-server.dest-storage-class-prefix=lvmo-test-sc \
-  --set create-storage-server.node-name="$TEST_NODE" \
-  --set create-storage-server.server-address="$TEST_SERVER_IP" \
-  --set create-storage-server.nfs-clients="$TEST_CLIENT_IP" \
   --set create-storage-server.image.repository="$TEST_REGISTRY/lvmo-csi" \
   --set create-storage-server.image.tag="$TEST_SERVER_TAG"
 ```
@@ -33,15 +29,18 @@ gibibytes; `5GB` is not a valid PVC quantity. The option defaults to disabled.
   the explicitly named existing StorageClass. It must not use lvmo itself or one
   of the generated classes, which would create a provisioning dependency cycle.
 - One privileged storage-server workload, with one replica and no overlapping
-  replacement. It is pinned to one eligible Linux
-  node; an exclusive backing-file lock prevents overlapping owners. A local source PV's node affinity must agree with that placement.
+  replacement. Kubernetes schedules it on an eligible Linux node according to
+  the source PV's topology; an exclusive backing-file lock prevents overlapping
+  owners. A local source PV keeps replacements on its node.
 - A regular file on the source PVC, attached to a loop device, holding a private
   LVM VG and `lvmo-pool` thin pool. Reserve space for the source filesystem,
   persistent API metadata and thin-pool metadata; usable capacity is smaller
   than the requested PVC size. Allocate the backing file before serving volumes
   rather than hiding source exhaustion behind a sparse file.
-- A stable API endpoint selected by the generated StorageClasses, plus a stable
-  NFS/iSCSI address reachable from every client node.
+- One IPv4 ClusterIP Service on TCP ports 50061 (API), 2049 (NFSv4) and 3260
+  (iSCSI). Generated StorageClasses use `<release>-storage.<namespace>.svc:50061`.
+  The server resolves that Service to its ClusterIP for NFS/iSCSI volume metadata;
+  client nodes must be able to reach the Service network.
 - Cluster-scoped StorageClasses `lvmo-test-sc-iscsi` and `lvmo-test-sc-nfs`, both
   using `lvmo.csi.io`, the same API endpoint/VG, and their respective protocols.
   They are not default classes. Name collisions must fail rather than adopting
@@ -58,12 +57,23 @@ Build `Dockerfile.storage-server` for the separate storage-server image with `lv
 filesystem tools, kernel NFS userspace tools and targetcli.
 
 Kernel NFS, LIO iSCSI targets, device mapper and loop devices need privileged
-access. This implementation uses a dedicated test node, host networking
-and an explicitly selected node address. Do not assume that an ordinary Pod IP
-or an iSCSI Service is sufficient: iSCSI discovery advertises target portals,
-and the backend persists the advertised server address with each volume.
-Validate discovery and reconnect from another node. Ports 2049, 3260 and 50061
-must be available; use NFSv4 to avoid an additional NFSv3 port-mapping surface.
+access. The server uses an IPv4 Pod network (`hostNetwork: false`), with a Service
+selecting its single replica. The Pod IP can change on replacement; the Service
+IP must remain unchanged while volumes exist. Do not delete/recreate that
+Service with live volumes: startup rejects a changed address in existing state.
+
+LIO listens on the Pod IP, with automatic wildcard portals disabled. The CSI
+node driver creates an iSCSI node record using the API-provided IQN and Service
+IP, without SendTargets discovery: raw discovery would advertise the Pod IP and
+bypass the stable Service. Reconnection must use the Service IP as well. The
+server rebuilds only its own persisted targets on startup to discard sockets
+left in an old Pod network namespace. LIO configuration and block devices remain
+host-wide despite Pod networking; use authorized test nodes with kernel support.
+
+NFS exports use the client selector `*` inside the Pod. Pod networking is not an
+access-control boundary: restrict reachability to trusted test clients through
+the cluster's network controls. There is no new management API authentication.
+Only NFSv4 is exposed; NFSv3 port mapping is not published by the Service.
 
 The entrypoint starts services without systemd and exits if the API or mountd exits. Restrict LVM
 discovery to the owned loop device. Never scan, initialize or deactivate other
@@ -73,13 +83,19 @@ preconditions; this cannot work on every managed Kubernetes platform.
 
 ## Restart and lifecycle
 
+An existing host-network installation cannot be upgraded in place to this
+Service identity. Clean up its consumers and snapshots, uninstall it with the
+old chart, and explicitly delete its retained backing PVC before a fresh test
+installation. The chart rejects an enabled upgrade that changes backend identity.
+
 Persist the backing file and API state together on the source PVC. On restart,
 reuse the existing loop attachment if present, activate the existing VG and
 reconcile exports/targets. Never truncate an existing image or recreate its VG.
 The existing API state lock alone does not protect loop/VG initialization:
 acquire exclusive ownership before either operation.
 
-Pinning avoids treating node relocation as safe failover. Do not force-delete
+Source-PV topology controls placement; a Service does not provide storage
+fencing or safe failover. Do not force-delete
 the server Pod to start another copy while the original node may still serve
 storage. Recovery after loss of the node is outside the first implementation.
 
@@ -91,8 +107,10 @@ Deleting a Pod does not by itself clean up host kernel objects.
 Helm removal is guarded. A pre-upgrade hook is rendered when an existing server
 is found, even when the new values disable it; a conditional hook inside the enabled
 block would disappear precisely when it is needed. A pre-delete hook performs
-the same check before uninstall. Refuse removal if volumes, snapshots or pending
-backend reclamation remain, or if the existing server cannot be inspected. Keep
+the same check before uninstall. Inspection Jobs use required Pod affinity to run
+on the server's node and mount its RWO backing PVC read-only. If no server can
+be reached or the Job cannot be scheduled, removal fails closed. Refuse removal
+if volumes, snapshots or pending backend reclamation remain, or if the existing server cannot be inspected. Keep
 the server and CSI driver running after a refusal so consumers can be cleaned up.
 A failed pre-delete hook can leave Helm's release status as `uninstalling` even
 though serving resources remain. Clean up consumers, then retry uninstall; do
@@ -111,7 +129,7 @@ Retain the source PVC on Helm uninstall or disable by default. Do not retain the
 privileged server workload with Helm's keep annotation. Delete consumer PVCs and
 snapshots first, verify backend cleanup, then uninstall and explicitly remove
 the retained source PVC when its data is no longer needed. Keeping the PVC does
-not make changing source class, VG identity, node address or size a supported
+not make changing source class, VG identity, Service identity or size a supported
 upgrade; reject unsupported changes instead of silently reinitializing data.
 
 ## Acceptance
@@ -127,8 +145,8 @@ client separately mounts that exported filesystem with NFSv4.1. In the Pod,
 `/etc/mtab` links to `/proc/mounts`: without it Ubuntu mountd crashed while
 reading the mount table. That fix alone did not solve the container root path.
 
-The server exports `/backing/nfs-root` read-only with `fsid=0`, restricted by
-`nfs-clients`. Only the volume directory is mirrored beneath it using a shared
+The server exports `/backing/nfs-root` read-only with `fsid=0` and client
+selector `*`. Only the volume directory is mirrored beneath it using a shared
 bind mount confined to the Pod's private mount namespace. The image's exportfs
 adapter publishes each mirrored child with its own writable policy and fsid.
 Neither `disk.img` nor `state.json` is inside the exported root. Root access
@@ -143,8 +161,14 @@ The nested Kind iSCSI helper accesses the host device and its sysfs timeout
 through the host process root. It must preserve the kernel's `/proc/.../root`
 magic-link semantics rather than resolve that path against the container root.
 
-Validated on 8 October 2026 with EBS gp3 on EKS and local-path on Kind in a
-Linux VM. EKS coverage includes snapshots, server replacement and the full
-upgrade/disable/uninstall sequence. Kind coverage includes the documented
-installation, both protocols, consumer restart and guarded uninstall. This does
-not establish support for every source filesystem or for abrupt node loss.
+The Pod-network/Service implementation passed the updated scenario on EKS with
+EBS gp3 on 9 October 2026: cross-node NFS/iSCSI, both snapshot restores, changed
+Pod IPs behind an unchanged Service, and the full upgrade/disable/uninstall
+sequence. Existing mounted consumers recovered after replacement in 3 seconds
+for iSCSI and 92 seconds for NFS, measured from API readiness, with hashes and
+new writes verified. Startup requires D-Bus before the first targetcli command.
+
+The previous host-network implementation was validated on Kind with local-path
+on 8 October 2026. The updated Kind networking/host-route path still needs its
+own runtime validation. These tests do not establish support for every source
+filesystem, NFS lock/delegation reclaim, or abrupt node loss.
