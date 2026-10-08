@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
 	pb "github.com/michaelcourcy/lvmo-csi/api/v1"
 	"github.com/michaelcourcy/lvmo-csi/internal/backend"
@@ -72,12 +73,23 @@ func cmdsMax(depth int) int {
 // setCommandTimeout sets the SCSI command timeout of the disk behind an
 // iSCSI by-path link, so that queued commands are not aborted too early.
 func setCommandTimeout(dev string, seconds int) error {
-	disk, err := filepath.EvalSymlinks(dev)
-	if err != nil {
-		return err
+	var path string
+	if os.Getenv("LVMO_ISCSI_HOST_PROC") != "" {
+		// /proc/<pid>/root is a kernel magic link. EvalSymlinks would turn
+		// it into this container's root, losing the host device namespace.
+		var st unix.Stat_t
+		if err := unix.Stat(dev, &st); err != nil {
+			return err
+		}
+		path = os.Getenv("LVMO_ISCSI_HOST_PROC") + "/1/root" + fmt.Sprintf("/sys/dev/block/%d:%d/device/timeout", unix.Major(uint64(st.Rdev)), unix.Minor(uint64(st.Rdev)))
+	} else {
+		disk, err := filepath.EvalSymlinks(dev)
+		if err != nil {
+			return err
+		}
+		path = "/sys/block/" + filepath.Base(disk) + "/device/timeout"
 	}
-	path := "/sys/block/" + filepath.Base(disk) + "/device/timeout"
-	if err = os.WriteFile(path, []byte(strconv.Itoa(seconds)), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(strconv.Itoa(seconds)), 0644); err != nil {
 		return status.Errorf(codes.Internal, "set SCSI timeout %s: %v", path, err)
 	}
 	return nil

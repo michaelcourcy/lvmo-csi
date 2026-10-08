@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lvmo-demo
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-iscsi
+  namespace: lvmo-demo
+spec:
+  accessModes: [ReadWriteOnce]
+  volumeMode: Filesystem
+  storageClassName: lvmo-test-sc-iscsi
+  resources:
+    requests:
+      storage: 256Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client-iscsi
+  namespace: lvmo-demo
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: lvmo-pod-control-plane
+  containers:
+  - name: client
+    image: ubuntu:24.04
+    command: [sleep, infinity]
+    volumeMounts:
+    - name: data
+      mountPath: /data
+  volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: data-iscsi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-nfs
+  namespace: lvmo-demo
+spec:
+  accessModes: [ReadWriteMany]
+  volumeMode: Filesystem
+  storageClassName: lvmo-test-sc-nfs
+  resources:
+    requests:
+      storage: 256Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client-nfs
+  namespace: lvmo-demo
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: lvmo-pod-control-plane
+  containers:
+  - name: client
+    image: ubuntu:24.04
+    command: [sleep, infinity]
+    volumeMounts:
+    - name: data
+      mountPath: /data
+  volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: data-nfs

@@ -1,0 +1,10 @@
+#!/bin/bash
+set -euo pipefail
+# Container-only adapter: the client-visible path is relative to the NFSv4
+# pseudoroot. Export the mirrored mount explicitly so each child retains its
+# own rw/fsid policy instead of inheriting the root's read-only policy.
+for file in /etc/exports.d/lvmo-*.exports; do
+  [[ -f "$file" ]] || continue
+  sed -i 's|^/backing/state/volumes/|/backing/nfs-root/backing/state/volumes/|' "$file"
+done
+exec /usr/sbin/exportfs "$@"

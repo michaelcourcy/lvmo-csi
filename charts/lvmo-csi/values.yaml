@@ -38,3 +38,18 @@ iscsiHostProc: ""
 failover:
   enabled: true
   timeout: 120s
+
+# Privileged, single-node test server. Never use for production data.
+create-storage-server:
+  enabled: false
+  source-storage-class: ""
+  size: 5Gi
+  dest-storage-class-prefix: lvmo-test-sc
+  # Explicit stable placement/address; no automatic relocation.
+  node-name: ""
+  server-address: ""
+  nfs-clients: ""
+  image:
+    repository: ""
+    tag: dev
+    pullPolicy: IfNotPresent

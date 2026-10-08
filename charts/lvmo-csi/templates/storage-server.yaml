@@ -1,0 +1,178 @@
+{{- $v := index .Values "create-storage-server" -}}
+{{- $name := printf "%s-storage" .Release.Name -}}
+{{- $old := lookup "apps/v1" "Deployment" .Release.Namespace $name -}}
+{{- $node := index $v "node-name" -}}
+{{- $address := index $v "server-address" -}}
+{{- $prefix := index $v "dest-storage-class-prefix" -}}
+{{- $image := printf "%s:%s" $v.image.repository $v.image.tag -}}
+{{- $vg := printf "lvmo-%s" (sha256sum (printf "%s/%s" .Release.Namespace .Release.Name) | trunc 12) -}}
+{{- if $v.enabled }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $prefix) }}{{ fail "invalid destination StorageClass prefix" }}{{ end }}
+{{- if gt (len $prefix) 55 }}{{ fail "destination prefix too long" }}{{ end }}
+{{- if not (regexMatch "^[1-9][0-9]*(Gi|G|Mi|M)$" $v.size) }}{{ fail "size must be a positive Kubernetes quantity, e.g. 5Gi" }}{{ end }}
+{{- $_ := required "source-storage-class is required" (index $v "source-storage-class") }}
+{{- $_ := required "node-name is required for stable test server placement" $node }}
+{{- $_ := required "server-address is required" $address }}
+{{- $_ := required "nfs-clients must explicitly restrict the test clients" (index $v "nfs-clients") }}
+{{- $_ := required "storage server image.repository is required" $v.image.repository }}
+{{- $source := lookup "storage.k8s.io/v1" "StorageClass" "" (index $v "source-storage-class") }}
+{{- if or (eq (index $v "source-storage-class") (printf "%s-nfs" $prefix)) (eq (index $v "source-storage-class") (printf "%s-iscsi" $prefix)) (and $source (eq $source.provisioner "lvmo.csi.io")) }}{{ fail "source StorageClass must be independent of lvmo" }}{{ end }}
+{{- if $old }}
+{{- $a := $old.metadata.annotations }}
+{{- if or (ne (index $a "lvmo.csi.io/source-class") (index $v "source-storage-class")) (ne (index $a "lvmo.csi.io/size") $v.size) (ne (index $a "lvmo.csi.io/prefix") $prefix) (ne (index $a "lvmo.csi.io/node") $node) (ne (index $a "lvmo.csi.io/address") $address) }}{{ fail "test server backing identity is immutable; clean up before migration" }}{{ end }}
+{{- end }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  volumeMode: Filesystem
+  storageClassName: {{ index $v "source-storage-class" | quote }}
+  resources:
+    requests:
+      storage: {{ $v.size }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  annotations:
+    lvmo.csi.io/source-class: {{ index $v "source-storage-class" | quote }}
+    lvmo.csi.io/size: {{ $v.size | quote }}
+    lvmo.csi.io/prefix: {{ $prefix | quote }}
+    lvmo.csi.io/node: {{ $node | quote }}
+    lvmo.csi.io/address: {{ $address | quote }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: {{ $name }}
+  template:
+    metadata:
+      labels:
+        app: {{ $name }}
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: {{ $node | quote }}
+      terminationGracePeriodSeconds: 120
+      containers:
+      - name: server
+        image: {{ $image | quote }}
+        imagePullPolicy: {{ $v.image.pullPolicy }}
+        securityContext:
+          privileged: true
+        env:
+        - name: VG
+          value: {{ $vg }}
+        - name: SERVER
+          value: {{ $address | quote }}
+        - name: BACKING_SIZE
+          value: {{ $v.size | quote }}
+        - name: NFS_CLIENTS
+          value: {{ index $v "nfs-clients" | quote }}
+        readinessProbe:
+          tcpSocket:
+            port: 50061
+          periodSeconds: 3
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+        volumeMounts:
+        - name: backing
+          mountPath: /backing
+        - name: dev
+          mountPath: /dev
+        - name: modules
+          mountPath: /lib/modules
+          readOnly: true
+        - name: configfs
+          mountPath: /sys/kernel/config
+      volumes:
+      - name: backing
+        persistentVolumeClaim:
+          claimName: {{ $name }}
+      - name: dev
+        hostPath:
+          path: /dev
+      - name: modules
+        hostPath:
+          path: /lib/modules
+      - name: configfs
+        hostPath:
+          path: /sys/kernel/config
+{{- range $protocol := list "iscsi" "nfs" }}
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ $prefix }}-{{ $protocol }}
+provisioner: lvmo.csi.io
+parameters:
+  endpoint: {{ printf "%s:50061" $address | quote }}
+  vg: {{ $vg }}
+  protocol: {{ $protocol }}
+  filesystem: ext4
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+volumeBindingMode: Immediate
+{{- end }}
+{{- end }}
+{{/* Old deployment lookup keeps the upgrade guard when new values disable it. */}}
+{{- if or $v.enabled $old }}
+{{- if $old }}
+{{- $node = index $old.metadata.annotations "lvmo.csi.io/node" }}
+{{- $address = index $old.metadata.annotations "lvmo.csi.io/address" }}
+{{- $image = (index $old.spec.template.spec.containers 0).image }}
+{{- end }}
+{{- range $phase := list "pre-upgrade" "pre-delete" }}
+{{- if or $v.enabled (eq $phase "pre-upgrade") }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}-{{ $phase }}
+  annotations:
+    helm.sh/hook: {{ $phase }}
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 60
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: {{ $node | quote }}
+      containers:
+      - name: guard
+        image: {{ $image | quote }}
+        {{- if and (eq $phase "pre-upgrade") $v.enabled }}
+        command: [bash, -c, "echo Enabled upgrade retains backing storage"]
+        {{- else }}
+        args: [guard]
+        {{- end }}
+        env:
+        - name: VG
+          value: {{ $vg }}
+        - name: SERVER
+          value: {{ $address | quote }}
+        volumeMounts:
+        - name: backing
+          mountPath: /backing
+          readOnly: true
+      volumes:
+      - name: backing
+        persistentVolumeClaim:
+          claimName: {{ $name }}
+{{- end }}
+{{- end }}
+{{- end }}

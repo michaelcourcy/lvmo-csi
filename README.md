@@ -145,6 +145,15 @@ Ordinary filesystem snapshot restores remain the default. The optional block pat
 
 See [validated capabilities and limits](docs/validation.md) and [metadata deployment and semantics](docs/metadata.md) for TLS, RBAC, discovery, independent verification, and Kasten configuration boundaries.
 
+## Self-contained test installation
+
+The [Kind quickstart](docs/quickstart-kind.md) creates a Linux-hosted Kind cluster
+and installs lvmo with a PVC-backed storage-server Pod in the CSI namespace. It
+builds a custom Kind node image with client tools and requires host kernel NFS,
+LIO and device-mapper support. The Helm `create-storage-server` option is
+**test-only**, disabled by default, and includes guarded removal and retained
+backing storage. See [configuration and lifecycle](docs/pod-storage-server.md).
+
 ## Deploy on your laptop: Kind with a separate Lima storage VM
 
 This walkthrough installs a released driver into **Kind on Docker Desktop**, with **Lima used only as the storage server**. Kubernetes pulls `michaelcourcy/lvmo-csi` from Docker Hub. You do not need Go, a source checkout, or the project's test scripts.
