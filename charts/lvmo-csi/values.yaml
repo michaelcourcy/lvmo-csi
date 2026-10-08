@@ -1,6 +1,7 @@
 image:
   repository: michaelcourcy/lvmo-csi
-  tag: dev
+  # Empty uses Chart.appVersion; set a tag to override it.
+  tag: ""
   pullPolicy: IfNotPresent
 # Optional fallback for legacy handles and standalone deployments.
 # New StorageClasses select their backend with parameters.endpoint.
@@ -46,6 +47,7 @@ create-storage-server:
   size: 5Gi
   dest-storage-class-prefix: lvmo-test-sc
   image:
-    repository: ""
-    tag: dev
+    repository: michaelcourcy/lvmo-csi-storage-server
+    # Empty uses Chart.appVersion, independently of the driver override.
+    tag: ""
     pullPolicy: IfNotPresent

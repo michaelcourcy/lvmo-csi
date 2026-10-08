@@ -161,7 +161,7 @@ Write `.test/reports/<YYYY-MM-DD>-<instance>-<scenario>.md` with: lvmo commit an
 
 Commit, push, or create releases only when the person running the session asks.
 
-**Images.** `michaelcourcy/lvmo-csi` on Docker Hub is the release repository: only the release workflow publishes to it, when a `v*` tag is pushed. Never push a development image there. A development image goes to the environment's own registry, as its type file describes under **Deploy a code change** (loaded into Kind, OpenShift's internal registry, a private ECR repository created with the environment…), or to the registry named in the instance file's `image-registry`. If neither applies, ask.
+**Images.** `michaelcourcy/lvmo-csi` and `michaelcourcy/lvmo-csi-storage-server` on Docker Hub are release repositories: only the release workflow publishes to them, when a `v*` tag is pushed. Never push a development image there. A development image goes to the environment's own registry, as its type file describes under **Deploy a code change** (loaded into Kind, OpenShift's internal registry, a private ECR repository created with the environment…), or to the registry named in the instance file's `image-registry`. If neither applies, ask.
 
 ## Running automated scenarios without an agent
 

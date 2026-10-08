@@ -29,6 +29,14 @@ jobs:
         # which may be a collaborator account.
         tags: michaelcourcy/lvmo-csi:${{ github.ref_name }}
         build-args: VERSION=${{ github.ref_name }}
+    - name: Publish storage-server image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: Dockerfile.storage-server
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: michaelcourcy/lvmo-csi-storage-server:${{ github.ref_name }}
     # A tag with a suffix (v0.1.0-alpha.3, v1.0.0-rc.1) is a pre-release.
     - run: |
         prerelease=""

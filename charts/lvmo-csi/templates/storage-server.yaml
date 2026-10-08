@@ -3,7 +3,7 @@
 {{- $old := lookup "apps/v1" "Deployment" .Release.Namespace $name -}}
 {{- $address := printf "%s.%s.svc" $name .Release.Namespace -}}
 {{- $prefix := index $v "dest-storage-class-prefix" -}}
-{{- $image := printf "%s:%s" $v.image.repository $v.image.tag -}}
+{{- $image := printf "%s:%s" $v.image.repository ($v.image.tag | default .Chart.AppVersion) -}}
 {{- $vg := printf "lvmo-%s" (sha256sum (printf "%s/%s" .Release.Namespace .Release.Name) | trunc 12) -}}
 {{- if $v.enabled }}
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $prefix) }}{{ fail "invalid destination StorageClass prefix" }}{{ end }}

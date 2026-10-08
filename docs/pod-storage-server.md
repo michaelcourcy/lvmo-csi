@@ -6,18 +6,42 @@ PVC as backing storage. It is for functional testing, without replication or
 automatic failover. It does not improve the durability or performance of the
 source storage.
 
-Build `Dockerfile.storage-server` into the test environment's registry. Set
-`TEST_REGISTRY`/`TEST_SERVER_TAG` to that image. No node name, server IP or NFS
-client IP is required. Install with:
+The release workflow publishes `michaelcourcy/lvmo-csi-storage-server:<version>`
+for Linux AMD64 and ARM64 alongside `michaelcourcy/lvmo-csi:<version>`, using
+the same `v*` tag. This applies to releases made with the updated workflow;
+older releases do not automatically gain a storage-server image or these defaults.
+The packaged chart defaults to both Docker Hub repositories and uses its
+`appVersion` for both image tags. For release `vX.Y.Z`, the chart version is
+`X.Y.Z` and `appVersion` is `vX.Y.Z` (prerelease suffixes are preserved).
+
+Set `VERSION` to a published `v*` tag built with the updated workflow. Install
+its chart directly from the GitHub release, replacing the source StorageClass
+with one available in your cluster:
 
 ```sh
-helm upgrade --install lvmo charts/lvmo-csi --namespace lvmo-csi --create-namespace \
+helm upgrade --install lvmo \
+  "https://github.com/michaelcourcy/lvmo-csi/releases/download/${VERSION}/lvmo-csi-${VERSION#v}.tgz" \
+  --namespace lvmo-csi --create-namespace \
   --set create-storage-server.enabled=true \
   --set create-storage-server.source-storage-class=my-local-storageclass \
   --set create-storage-server.size=5Gi \
-  --set create-storage-server.dest-storage-class-prefix=lvmo-test-sc \
-  --set create-storage-server.image.repository="$TEST_REGISTRY/lvmo-csi" \
-  --set create-storage-server.image.tag="$TEST_SERVER_TAG"
+  --set create-storage-server.dest-storage-class-prefix=lvmo-test-sc
+```
+
+The chart package selects the application version; the Helm release name `lvmo`
+does not. No image overrides, node name, server IP or NFS client IP are required.
+On upgrades, remove old explicit image overrides from your saved values if you
+want to follow the chart's defaults; `--reuse-values` can retain those overrides.
+
+For development, build both Dockerfiles into the environment's permitted
+registry and install from `charts/lvmo-csi`. The source chart uses `appVersion: dev`; explicitly override both images with
+your development builds:
+
+```sh
+--set image.repository="$TEST_REGISTRY/lvmo-csi" \
+--set image.tag="$TEST_DRIVER_TAG" \
+--set create-storage-server.image.repository="$TEST_REGISTRY/lvmo-csi" \
+--set create-storage-server.image.tag="$TEST_SERVER_TAG"
 ```
 
 Use Kubernetes quantities: `5G` means decimal gigabytes and `5Gi` means binary
@@ -53,7 +77,7 @@ need the NFS and iSCSI prerequisites described in [nodes.md](nodes.md).
 ## Host integration and image
 
 The driver image does not contain the storage API or its server tools.
-Build `Dockerfile.storage-server` for the separate storage-server image with `lvmo-csi`, LVM/thin tools, loop utilities,
+The separate storage-server image is built from `Dockerfile.storage-server` with `lvmo-csi`, LVM/thin tools, loop utilities,
 filesystem tools, kernel NFS userspace tools and targetcli.
 
 Kernel NFS, LIO iSCSI targets, device mapper and loop devices need privileged

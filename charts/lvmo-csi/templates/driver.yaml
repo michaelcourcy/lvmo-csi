@@ -102,7 +102,7 @@ spec:
       - {key: node.kubernetes.io/not-ready, operator: Exists, effect: NoExecute, tolerationSeconds: 30}
       containers:
       - name: driver
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         args: ["--endpoint=unix:///csi/csi.sock", "--api-endpoint={{ .Values.apiEndpoint }}", "--failover-timeout={{ if .Values.failover.enabled }}{{ .Values.failover.timeout }}{{ else }}0{{ end }}"]
         volumeMounts:
@@ -160,7 +160,7 @@ spec:
       # Fails, with the reasons in its log, when the node lacks what iSCSI
       # volumes need: kubectl logs -n {{ .Release.Namespace }} <pod> -c node-check
       - name: node-check
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         securityContext: {privileged: true}
         args: ["--check-node", "--node-id=$(NODE_NAME)"]
@@ -180,7 +180,7 @@ spec:
       {{- end }}
       containers:
       - name: driver
-        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         securityContext: {privileged: true}
         args: ["--endpoint=unix:///csi/csi.sock", "--api-endpoint={{ .Values.apiEndpoint }}", "--node-id=$(NODE_NAME)"]

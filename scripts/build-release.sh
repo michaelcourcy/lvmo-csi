@@ -9,4 +9,4 @@ for arch in amd64 arm64; do
  done
 done
 (cd dist; shasum -a 256 lvmo-*-linux-* > SHA256SUMS)
-helm package charts/lvmo-csi --destination dist
+VERSION="$version" bash scripts/package-chart.sh dist
