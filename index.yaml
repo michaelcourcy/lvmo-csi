@@ -2,6 +2,16 @@ apiVersion: v1
 entries:
   lvmo-csi:
   - apiVersion: v2
+    appVersion: v0.1.0
+    created: "2026-10-09T14:04:47.493686759Z"
+    description: LVM-backed NFS and iSCSI CSI driver
+    digest: 780968865aa3ae13bcd7646e39f05a750300fd5bf55f9045b96b2078f0ebeccc
+    name: lvmo-csi
+    type: application
+    urls:
+    - https://github.com/michaelcourcy/lvmo-csi/releases/download/v0.1.0/lvmo-csi-0.1.0.tgz
+    version: 0.1.0
+  - apiVersion: v2
     appVersion: v0.1.0-alpha.5
     created: "2026-10-09T15:55:04.906587+02:00"
     description: LVM-backed NFS and iSCSI CSI driver
@@ -21,4 +31,4 @@ entries:
     urls:
     - https://github.com/michaelcourcy/lvmo-csi/releases/download/v0.1.0-alpha.4/lvmo-csi-0.1.0-alpha.4.tgz
     version: 0.1.0-alpha.4
-generated: "2026-10-09T15:55:04.906048+02:00"
+generated: "2026-10-09T14:04:47.493157304Z"
