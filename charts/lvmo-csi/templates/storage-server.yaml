@@ -29,8 +29,8 @@ spec:
     app: {{ $name }}
   ports:
   - name: api
-    port: 50061
-    targetPort: 50061
+    port: 50051
+    targetPort: 50051
   - name: nfs
     port: 2049
     targetPort: 2049
@@ -98,7 +98,7 @@ spec:
               fieldPath: status.podIP
         readinessProbe:
           tcpSocket:
-            port: 50061
+            port: 50051
           periodSeconds: 3
         resources:
           requests:
@@ -135,7 +135,7 @@ metadata:
   name: {{ $prefix }}-{{ $protocol }}
 provisioner: lvmo.csi.io
 parameters:
-  endpoint: {{ printf "%s:50061" $address | quote }}
+  endpoint: {{ printf "%s:50051" $address | quote }}
   vg: {{ $vg }}
   protocol: {{ $protocol }}
   filesystem: ext4

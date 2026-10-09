@@ -61,8 +61,8 @@ gibibytes; `5GB` is not a valid PVC quantity. The option defaults to disabled.
   persistent API metadata and thin-pool metadata; usable capacity is smaller
   than the requested PVC size. Allocate the backing file before serving volumes
   rather than hiding source exhaustion behind a sparse file.
-- One IPv4 ClusterIP Service on TCP ports 50061 (API), 2049 (NFSv4) and 3260
-  (iSCSI). Generated StorageClasses use `<release>-storage.<namespace>.svc:50061`.
+- One IPv4 ClusterIP Service on TCP ports 50051 (API), 2049 (NFSv4) and 3260
+  (iSCSI). Generated StorageClasses use `<release>-storage.<namespace>.svc:50051`.
   The server resolves that Service to its ClusterIP for NFS/iSCSI volume metadata;
   client nodes must be able to reach the Service network.
 - Cluster-scoped StorageClasses `lvmo-test-sc-iscsi` and `lvmo-test-sc-nfs`, both
@@ -73,6 +73,14 @@ gibibytes; `5GB` is not a valid PVC quantity. The option defaults to disabled.
 The source PVC supplies bytes; lvmo supplies thin snapshots and the NFS/iSCSI
 interfaces. Applications use the generated classes normally. Client nodes still
 need the NFS and iSCSI prerequisites described in [nodes.md](nodes.md).
+
+The source chart now uses API port `50051`, matching the standalone server.
+Release `v0.1.0-alpha.4` still uses `50061`; use a matching chart and server
+image built from the same version. Existing StorageClass parameters and volume
+handles retain the old endpoint, so this port change is not an in-place upgrade
+for an installation with existing volumes. For a disposable test installation,
+clean up its consumers, snapshots and volumes using the old release before
+uninstalling and reinstalling with the new chart and image.
 
 ## Host integration and image
 

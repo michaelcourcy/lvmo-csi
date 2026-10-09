@@ -92,6 +92,8 @@ Generated bindings are committed. To regenerate, install `protoc`, `protoc-gen-g
 
 ## Storage server
 
+For quickstart testing, the Helm chart can also run a [containerized storage server](docs/pod-storage-server.md) inside Kubernetes, backed by an existing PVC. This option is intended for testing only; we recommend a separate storage-server VM for deployments beyond quickstart testing.
+
 Use a dedicated Linux server (tested with Ubuntu 24.04) with one or more VGs, each holding a thin pool named `lvmo-pool`, and run the lvmo API on it:
 
 ```sh

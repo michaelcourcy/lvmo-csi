@@ -9,7 +9,7 @@ helm template test "$chart" >"$tmp/off"
 if grep -q 'name: test-storage' "$tmp/off"; then echo 'disabled chart creates server resources'; exit 1; fi
 args=(--set create-storage-server.enabled=true --set create-storage-server.source-storage-class=external --set create-storage-server.image.repository=test)
 helm template test "$chart" "${args[@]}" --namespace storage-test --show-only templates/storage-server.yaml >"$tmp/on"
-for text in 'name: lvmo-test-sc-iscsi' 'name: lvmo-test-sc-nfs' 'helm.sh/resource-policy: keep' 'helm.sh/hook: pre-delete' 'helm.sh/hook: pre-upgrade' 'type: Recreate' 'kind: Service' 'type: ClusterIP' 'hostNetwork: false' 'fieldPath: status.podIP' 'test-storage.storage-test.svc:50061' 'podAffinity:' 'port: 2049' 'port: 3260'; do
+for text in 'name: lvmo-test-sc-iscsi' 'name: lvmo-test-sc-nfs' 'helm.sh/resource-policy: keep' 'helm.sh/hook: pre-delete' 'helm.sh/hook: pre-upgrade' 'type: Recreate' 'kind: Service' 'type: ClusterIP' 'hostNetwork: false' 'fieldPath: status.podIP' 'test-storage.storage-test.svc:50051' 'podAffinity:' 'port: 2049' 'port: 3260'; do
   grep -q "$text" "$tmp/on"
 done
 if grep -Eq 'hostNetwork: true|NFS_CLIENTS|kubernetes.io/hostname:|server-address|node-name' "$tmp/on"; then

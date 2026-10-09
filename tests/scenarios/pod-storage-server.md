@@ -44,9 +44,9 @@ stable ClusterIP Service and requiring no node/IP configuration.
    Verify one server replica, a loop device backed by the source PVC file, one
    owned VG/thin pool, and the two generated classes pointing at that backend.
    Verify `hostNetwork: false`, no hostname selector, a Pod IP distinct from the
-   host IP, and a ClusterIP Service exposing TCP 50061, 2049 and 3260. Record its
+   host IP, and a ClusterIP Service exposing TCP 50051, 2049 and 3260. Record its
    IP and EndpointSlice Pod address. Both class endpoints must use
-   `lvmo-pod-test-storage.lvmo-pod-test.svc:50061`. Record the server node and
+   `lvmo-pod-test-storage.lvmo-pod-test.svc:50051`. Record the server node and
    select a different node for the consumers in subsequent steps.
 3. Create namespace `lvmo-pod-consumers`. Create a 256Mi Filesystem PVC on each
    generated class (NFS RWX, iSCSI RWO). Mount each in a Pod on the second node.

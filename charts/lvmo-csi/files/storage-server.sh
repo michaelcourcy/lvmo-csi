@@ -3,7 +3,7 @@ set -euo pipefail
 root=/backing
 vg=${VG:?}
 if [[ ${1:-serve} == guard ]]; then
-  timeout 10 bash -c 'echo > "/dev/tcp/$1/50061"' _ "$SERVER" || { echo 'Cannot inspect running server'; exit 1; }
+  timeout 10 bash -c 'echo > "/dev/tcp/$1/50051"' _ "$SERVER" || { echo 'Cannot inspect running server'; exit 1; }
   test -f "$root/state/state.json" || { echo "Cannot inspect backend state"; exit 1; }
   jq -e '(.volumes | type == "object") and (.snapshots | type == "object") and ([(.volumes // {}), (.snapshots // {}), (.deleting // {}), (.snapshot_deleting // {})] | all(length == 0))' "$root/state/state.json" || { echo 'Removal refused: volumes, snapshots or pending reclamation remain'; exit 1; }
   echo 'Backend state empty; removal permitted'
@@ -119,6 +119,6 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 0' TERM INT
-/usr/local/bin/lvmo-csi -P=50061 --root="$root/state" --server="$SERVER" --nfs-clients="$clients" --iscsi-listen-address="$POD_IP" "$vg" 9>&- &
+/usr/local/bin/lvmo-csi -P=50051 --root="$root/state" --server="$SERVER" --nfs-clients="$clients" --iscsi-listen-address="$POD_IP" "$vg" 9>&- &
 api=$!
 wait -n "$api" "$mountd"
