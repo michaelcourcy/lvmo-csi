@@ -14,13 +14,15 @@ The packaged chart defaults to both Docker Hub repositories and uses its
 `appVersion` for both image tags. For release `vX.Y.Z`, the chart version is
 `X.Y.Z` and `appVersion` is `vX.Y.Z` (prerelease suffixes are preserved).
 
-Set `VERSION` to a published `v*` tag built with the updated workflow. Install
-its chart directly from the GitHub release, replacing the source StorageClass
-with one available in your cluster:
+Install the chart from the project's Helm repository, replacing the source
+StorageClass with one available in your cluster. Without `--version`, Helm
+selects the latest stable release; add `--version` to pin one, or `--devel` to
+include pre-releases:
 
 ```sh
-helm upgrade --install lvmo \
-  "https://github.com/michaelcourcy/lvmo-csi/releases/download/${VERSION}/lvmo-csi-${VERSION#v}.tgz" \
+helm repo add lvmo https://michaelcourcy.github.io/lvmo-csi
+helm repo update
+helm upgrade --install lvmo lvmo/lvmo-csi \
   --namespace lvmo-csi --create-namespace \
   --set create-storage-server.enabled=true \
   --set create-storage-server.source-storage-class=my-local-storageclass \
@@ -69,14 +71,20 @@ gibibytes; `5GB` is not a valid PVC quantity. The option defaults to disabled.
   using `lvmo.csi.io`, the same API endpoint/VG, and their respective protocols.
   They are not default classes. Name collisions must fail rather than adopting
   an unrelated class.
+- Cluster-scoped VolumeSnapshotClass `lvmo-test-sc-snapshots` for `lvmo.csi.io`,
+  with `deletionPolicy: Delete` and the annotation
+  `k10.kasten.io/is-snapshot-class: "true"`, so Kasten uses it for the generated
+  classes. The VolumeSnapshot CRDs must be installed before the chart: without
+  them the install fails. Do not annotate another `lvmo.csi.io` snapshot class
+  for Kasten in the same cluster.
 
 The source PVC supplies bytes; lvmo supplies thin snapshots and the NFS/iSCSI
 interfaces. Applications use the generated classes normally. Client nodes still
 need the NFS and iSCSI prerequisites described in [nodes.md](nodes.md).
 
-The source chart now uses API port `50051`, matching the standalone server.
-Release `v0.1.0-alpha.4` still uses `50061`; use a matching chart and server
-image built from the same version. Existing StorageClass parameters and volume
+Since `v0.1.0-alpha.5`, the pod storage server uses API port `50051`, matching
+the standalone server. Release `v0.1.0-alpha.4` still uses `50061`; use a
+matching chart and server image built from the same version. Existing StorageClass parameters and volume
 handles retain the old endpoint, so this port change is not an in-place upgrade
 for an installation with existing volumes. For a disposable test installation,
 clean up its consumers, snapshots and volumes using the old release before

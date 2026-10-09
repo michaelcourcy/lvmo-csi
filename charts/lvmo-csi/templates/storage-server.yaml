@@ -143,6 +143,15 @@ reclaimPolicy: Delete
 allowVolumeExpansion: true
 volumeBindingMode: Immediate
 {{- end }}
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: {{ $prefix }}-snapshots
+  annotations:
+    k10.kasten.io/is-snapshot-class: "true"
+driver: lvmo.csi.io
+deletionPolicy: Delete
 {{- end }}
 {{/* Old deployment lookup keeps the upgrade guard when new values disable it. */}}
 {{- if or $v.enabled $old }}

@@ -43,6 +43,9 @@ stable ClusterIP Service and requiring no node/IP configuration.
    `lvmo-test-sc`. Wait up to 10 minutes for source binding and API readiness.
    Verify one server replica, a loop device backed by the source PVC file, one
    owned VG/thin pool, and the two generated classes pointing at that backend.
+   Verify VolumeSnapshotClass `lvmo-test-sc-snapshots` exists with driver
+   `lvmo.csi.io`, `deletionPolicy: Delete` and annotation
+   `k10.kasten.io/is-snapshot-class: "true"`.
    Verify `hostNetwork: false`, no hostname selector, a Pod IP distinct from the
    host IP, and a ClusterIP Service exposing TCP 50051, 2049 and 3260. Record its
    IP and EndpointSlice Pod address. Both class endpoints must use
@@ -57,8 +60,8 @@ stable ClusterIP Service and requiring no node/IP configuration.
    node IP. Inspect `targetcli ls` inside the server: its listener must bind the
    Pod IP with no wildcard portal. The driver must not depend on SendTargets
    discovery to create its Service-addressed node records.
-4. Create a dedicated VolumeSnapshotClass for `lvmo.csi.io` and a snapshot of
-   each PVC. Wait up to 5 minutes for readyToUse. Restore each into a new 256Mi
+4. Using the generated VolumeSnapshotClass `lvmo-test-sc-snapshots`, create a
+   snapshot of each PVC. Wait up to 5 minutes for readyToUse. Restore each into a new 256Mi
    PVC of the same class and verify both hashes from Pods on the second node.
 5. Stop consumer Pods cleanly, keep their PVCs, and delete the server Pod with
    normal graceful termination. Allow its replacement 10 minutes to become
@@ -89,7 +92,8 @@ stable ClusterIP Service and requiring no node/IP configuration.
    interpreted as an empty backend. Use a bounded, reversible interruption of
    the guard's access rather than force-deleting a server with mounted storage.
 9. Remove all consumers and snapshots and wait for physical reclamation. Disable
-   the option and verify successful server/class removal while the source PVC
+   the option and verify successful server, StorageClass and
+   VolumeSnapshotClass removal while the source PVC
    is retained and the Service is removed. Re-enable against the retained source and verify readiness with
    the existing pool and state. Create a fresh 256Mi iSCSI consumer and write a
    hash-checked file. Attempt uninstall: it must fail while leaving the data
@@ -100,9 +104,9 @@ stable ClusterIP Service and requiring no node/IP configuration.
 
 ## Expected
 
-- Opt-in installation creates one server in the CSI namespace and exactly two
-  non-default destination classes plus a ClusterIP Service; disabled installation
-  is unchanged. No node name, server address or NFS client selector is required.
+- Opt-in installation creates one server in the CSI namespace, exactly two
+  non-default destination classes, one VolumeSnapshotClass annotated for Kasten
+  and a ClusterIP Service; disabled installation is unchanged. No node name, server address or NFS client selector is required.
 - The server uses its Pod network and source-PV topology for placement. NFS
   mounts and iSCSI client sessions use the stable Service IP; iSCSI listeners
   bind only the current Pod IP. Pod replacement changes the endpoint without
@@ -142,8 +146,8 @@ stable ClusterIP Service and requiring no node/IP configuration.
   host attachments. Verify the source PVC still exists, then explicitly delete
   it and wait for its source provisioner's reclamation. Do not remove a backing
   file while a loop device still references it.
-- Delete the dedicated snapshot class and test namespaces after their resources
-  are gone. Compare host inventory to baseline; record leftovers as failures.
+- Delete the test namespaces after their resources are gone; uninstall removes
+  the generated VolumeSnapshotClass. Compare host inventory to baseline; record leftovers as failures.
 - Retain diagnostic evidence and report any blocked cleanup instead of touching
   unrelated host storage.
 
