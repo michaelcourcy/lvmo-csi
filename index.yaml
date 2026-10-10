@@ -2,6 +2,16 @@ apiVersion: v1
 entries:
   lvmo-csi:
   - apiVersion: v2
+    appVersion: v0.2.0-alpha.2
+    created: "2026-10-10T21:59:45.124976025Z"
+    description: LVM-backed NFS and iSCSI CSI driver
+    digest: c6dce1d6c6d23cc85a5911c97662c1250528a7df2ae53f966c0daa598d551669
+    name: lvmo-csi
+    type: application
+    urls:
+    - https://github.com/michaelcourcy/lvmo-csi/releases/download/v0.2.0-alpha.2/lvmo-csi-0.2.0-alpha.2.tgz
+    version: 0.2.0-alpha.2
+  - apiVersion: v2
     appVersion: v0.2.0-alpha.1
     created: "2026-10-10T15:25:55.073981473Z"
     description: LVM-backed NFS and iSCSI CSI driver
@@ -43,6 +53,16 @@ entries:
     version: 0.1.0-alpha.4
   lvmo-csi-storage-server:
   - apiVersion: v2
+    appVersion: v0.2.0-alpha.2
+    created: "2026-10-10T21:59:45.125221826Z"
+    description: PVC-backed test storage server for the lvmo CSI driver
+    digest: 2af5c5e94468c5a6744cc571efad8666056d25b8f5814613f2fb6321bdc48240
+    name: lvmo-csi-storage-server
+    type: application
+    urls:
+    - https://github.com/michaelcourcy/lvmo-csi/releases/download/v0.2.0-alpha.2/lvmo-csi-storage-server-0.2.0-alpha.2.tgz
+    version: 0.2.0-alpha.2
+  - apiVersion: v2
     appVersion: v0.2.0-alpha.1
     created: "2026-10-10T15:25:55.07415853Z"
     description: PVC-backed test storage server for the lvmo CSI driver
@@ -52,4 +72,4 @@ entries:
     urls:
     - https://github.com/michaelcourcy/lvmo-csi/releases/download/v0.2.0-alpha.1/lvmo-csi-storage-server-0.2.0-alpha.1.tgz
     version: 0.2.0-alpha.1
-generated: "2026-10-10T15:25:55.07342869Z"
+generated: "2026-10-10T21:59:45.124559421Z"
