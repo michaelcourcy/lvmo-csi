@@ -43,6 +43,18 @@ absent -Eq 'hostNetwork: true|NFS_CLIENTS|kubernetes.io/hostname:|server-address
 for bad in size=5GB source-storage-class= dest-storage-class-prefix=Bad_Prefix source-storage-class=test-nfs source-storage-class=test-iscsi "dest-storage-class-prefix=$(printf '%056d' 0)"; do
   if helm template test "$server" "${args[@]}" --set "$bad" >"$tmp/bad" 2>&1; then echo "Accepted invalid value: $bad"; exit 1; fi
 done
+absent -Eq 'volumeMode: Block|volumeDevices:|BLOCK_DEVICE|name: test-storage-state' "$tmp/server"
+helm template test "$server" "${args[@]}" --set block-mode=true --set state-size=2Gi >"$tmp/block"
+for text in 'volumeMode: Block' 'name: test-storage-state' 'storage: 2Gi' 'devicePath: /lvmo-dev/backing' 'name: BLOCK_DEVICE' 'name: block-device' 'lvmo.csi.io/block-mode: "true"'; do
+  grep -Fq "$text" "$tmp/block"
+done
+absent -q 'BACKING_SIZE' "$tmp/block"
+# Server and guard both keep API state on the Filesystem state PVC.
+[[ $(grep -c 'claimName: test-storage-state' "$tmp/block") == 2 ]] || { echo 'State PVC not used by server and guard'; exit 1; }
+[[ $(grep -c 'claimName: test-storage$' "$tmp/block") == 1 ]] || { echo 'Block PVC not used once'; exit 1; }
+for bad in block-mode=yes state-size=1GB; do
+  if helm template test "$server" "${args[@]}" --set-string "$bad" >"$tmp/bad" 2>&1; then echo "Accepted invalid value: $bad"; exit 1; fi
+done
 helm template test "$server" "${args[@]}" --set dest-storage-class-prefix=custom --set size=5Gi >"$tmp/override"
 grep -q 'name: custom-iscsi' "$tmp/override"
 grep -q 'storage: 5Gi' "$tmp/override"

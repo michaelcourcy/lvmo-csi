@@ -5,16 +5,24 @@
 {{- $prefix := index $v "dest-storage-class-prefix" | default .Release.Name -}}
 {{- $image := printf "%s:%s" $v.image.repository ($v.image.tag | default .Chart.AppVersion) -}}
 {{- $vg := printf "lvmo-%s" (sha256sum (printf "%s/%s" .Release.Namespace .Release.Name) | trunc 12) -}}
+{{- $block := index $v "block-mode" | default false -}}
+{{- if not (kindIs "bool" $block) }}{{ fail "block-mode must be true or false" }}{{ end }}
+{{- /* Defaults here too: --reuse-values upgrades do not see new chart defaults. */}}
+{{- $stateSize := index $v "state-size" | default "1Gi" -}}
+{{- $stateClaim := ternary (printf "%s-state" $name) $name $block -}}
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $prefix) }}{{ fail "invalid destination StorageClass prefix" }}{{ end }}
 {{- if gt (len $prefix) 55 }}{{ fail "destination prefix too long" }}{{ end }}
 {{- if not (regexMatch "^[1-9][0-9]*(Gi|G|Mi|M)$" $v.size) }}{{ fail "size must be a positive Kubernetes quantity, e.g. 5Gi" }}{{ end }}
+{{- if not (regexMatch "^[1-9][0-9]*(Gi|G|Mi|M)$" $stateSize) }}{{ fail "state-size must be a positive Kubernetes quantity, e.g. 1Gi" }}{{ end }}
 {{- $_ := required "source-storage-class is required" (index $v "source-storage-class") }}
 {{- $_ := required "storage server image.repository is required" $v.image.repository }}
 {{- $source := lookup "storage.k8s.io/v1" "StorageClass" "" (index $v "source-storage-class") }}
 {{- if or (eq (index $v "source-storage-class") (printf "%s-nfs" $prefix)) (eq (index $v "source-storage-class") (printf "%s-iscsi" $prefix)) (and $source (eq $source.provisioner "lvmo.csi.io")) }}{{ fail "source StorageClass must be independent of lvmo" }}{{ end }}
+{{- /* Two zonal PVCs bound independently could land in different zones. */}}
+{{- if and $block $source (ne ($source.volumeBindingMode | default "Immediate") "WaitForFirstConsumer") }}{{ fail (printf "block-mode requires a WaitForFirstConsumer source StorageClass: %s binds Immediate, so its block and state PVCs could be placed apart" $source.metadata.name) }}{{ end }}
 {{- if $old }}
 {{- $a := $old.metadata.annotations }}
-{{- if or (ne (index $a "lvmo.csi.io/source-class") (index $v "source-storage-class")) (ne (index $a "lvmo.csi.io/size") $v.size) (ne (index $a "lvmo.csi.io/prefix") $prefix) (ne (index $a "lvmo.csi.io/address") $address) }}{{ fail "test server backing identity is immutable; clean up before migration" }}{{ end }}
+{{- if or (ne (index $a "lvmo.csi.io/source-class") (index $v "source-storage-class")) (ne (index $a "lvmo.csi.io/size") $v.size) (ne (index $a "lvmo.csi.io/prefix") $prefix) (ne (index $a "lvmo.csi.io/address") $address) (ne (index $a "lvmo.csi.io/block-mode" | default "false") (toString $block)) (and $block (ne (index $a "lvmo.csi.io/state-size") $stateSize)) }}{{ fail "test server backing identity is immutable; clean up before migration" }}{{ end }}
 {{- end }}
 apiVersion: v1
 kind: Service
@@ -45,12 +53,28 @@ metadata:
     helm.sh/resource-policy: keep
 spec:
   accessModes: [ReadWriteOnce]
-  volumeMode: Filesystem
+  volumeMode: {{ ternary "Block" "Filesystem" $block }}
   storageClassName: {{ index $v "source-storage-class" | quote }}
   resources:
     requests:
       storage: {{ $v.size }}
 ---
+{{- if $block }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $stateClaim }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: [ReadWriteOnce]
+  volumeMode: Filesystem
+  storageClassName: {{ index $v "source-storage-class" | quote }}
+  resources:
+    requests:
+      storage: {{ $stateSize }}
+---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -60,6 +84,10 @@ metadata:
     lvmo.csi.io/size: {{ $v.size | quote }}
     lvmo.csi.io/prefix: {{ $prefix | quote }}
     lvmo.csi.io/address: {{ $address | quote }}
+    lvmo.csi.io/block-mode: {{ toString $block | quote }}
+    {{- if $block }}
+    lvmo.csi.io/state-size: {{ $stateSize | quote }}
+    {{- end }}
 spec:
   replicas: 1
   strategy:
@@ -78,6 +106,22 @@ spec:
       nodeSelector:
         kubernetes.io/os: linux
       terminationGracePeriodSeconds: 120
+      {{- if $block }}
+      # A container that mounts the host /dev does not get its volumeDevices
+      # node on every runtime (containerd skips it). This one has no /dev
+      # mount; it records the device number for the server to recreate it.
+      initContainers:
+      - name: block-device
+        image: {{ $image | quote }}
+        imagePullPolicy: {{ $v.image.pullPolicy }}
+        command: [bash, -c, "stat -c '%t %T' /lvmo-dev/backing >/lvmo-dev-info/number"]
+        volumeDevices:
+        - name: backing-device
+          devicePath: /lvmo-dev/backing
+        volumeMounts:
+        - name: block-info
+          mountPath: /lvmo-dev-info
+      {{- end }}
       containers:
       - name: server
         image: {{ $image | quote }}
@@ -89,8 +133,15 @@ spec:
           value: {{ $vg }}
         - name: SERVER
           value: {{ $address | quote }}
+        {{- if $block }}
+        - name: BLOCK_DEVICE
+          value: /lvmo-dev/backing
+        - name: BLOCK_DEVICE_NUMBER
+          value: /lvmo-dev-info/number
+        {{- else }}
         - name: BACKING_SIZE
           value: {{ $v.size | quote }}
+        {{- end }}
         - name: POD_IP
           valueFrom:
             fieldRef:
@@ -113,10 +164,22 @@ spec:
           readOnly: true
         - name: configfs
           mountPath: /sys/kernel/config
+        {{- if $block }}
+        - name: block-info
+          mountPath: /lvmo-dev-info
+          readOnly: true
+        {{- end }}
       volumes:
       - name: backing
         persistentVolumeClaim:
+          claimName: {{ $stateClaim }}
+      {{- if $block }}
+      - name: backing-device
+        persistentVolumeClaim:
           claimName: {{ $name }}
+      - name: block-info
+        emptyDir: {}
+      {{- end }}
       - name: dev
         hostPath:
           path: /dev
@@ -187,4 +250,4 @@ spec:
       volumes:
       - name: backing
         persistentVolumeClaim:
-          claimName: {{ $name }}
+          claimName: {{ $stateClaim }}

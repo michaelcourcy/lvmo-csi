@@ -6,7 +6,7 @@
 Install one `lvmo/lvmo-csi` driver release per cluster and independently install
 one or more `lvmo/lvmo-csi-storage-server` releases. The containerized server is
 for functional testing, without replication or automatic failover. It uses an
-existing Filesystem PVC as backing storage and does not improve its durability
+existing PVC (Filesystem, or Block in [block mode](#block-mode)) as backing storage and does not improve its durability
 or performance. External Linux storage servers continue to work without the
 storage-server chart.
 
@@ -47,8 +47,10 @@ it and explicitly deleting its retained backing PVC for a fresh installation.
 | Driver | `snapshotClass.name` | `lvmo-snapshots` |
 | Driver | `snapshotClass.deletionPolicy` | `Delete`; also accepts `Retain` |
 | Driver | `snapshotClass.kasten` | `true`; add `k10.kasten.io/is-snapshot-class: "true"`; set false to omit |
-| Server | `source-storage-class` | Required existing non-lvmo Filesystem class |
+| Server | `source-storage-class` | Required existing non-lvmo class; Filesystem, or Block in block mode |
 | Server | `size` | `50Gi` |
+| Server | `block-mode` | `false`; `true` uses a Block-mode PVC as the LVM physical volume, see [Block mode](#block-mode) |
+| Server | `state-size` | `1Gi`; size of the Filesystem state PVC in block mode |
 | Server | `dest-storage-class-prefix` | Empty means the server release name; explicit override allowed |
 | Server | `resources` | `{}`; no chart-supplied CPU/memory requests or limits |
 
@@ -183,6 +185,35 @@ handles retain the old endpoint, so this port change is not an in-place upgrade
 for an installation with existing volumes. For a disposable test installation,
 clean up its consumers, snapshots and volumes using the old release before
 uninstalling and reinstalling with the new chart and image.
+
+## Block mode
+
+By default the VG lives in a loop-attached file on a Filesystem PVC, which
+works with any class, including Kind's and minikube's. When the source class
+supports Block volumes, `--set block-mode=true` removes the loop device and the
+source filesystem:
+
+- PVC `<release>-storage` is created with `volumeMode: Block`. The server
+  mounts the host's `/dev`, and containerd then does not create the container's
+  `volumeDevices` node. So an init container without that mount receives the
+  device and records its major:minor, and the server recreates it at
+  `/lvmo-dev/backing`, outside `/dev`. The server creates the PV and VG directly
+  on it; the thin pool takes about 90% of the device, with no 20% filesystem
+  reserve.
+- A second PVC, `<release>-storage-state`, of `state-size` and the same class
+  in Filesystem mode, holds the API state, identity and lock at `/backing`. The
+  uninstall guard mounts it read-only, as it mounts the single PVC in loop mode.
+- The VG is created with auto-activation disabled, so a node whose OS runs
+  LVM event activation does not activate it when the device reattaches.
+
+The source class must bind `WaitForFirstConsumer`. Two zonal PVCs bound
+`Immediate` could land in different zones, leaving the server unschedulable;
+install and upgrade refuse such a class with an explicit error. The check uses
+a cluster lookup, so plain `helm template` cannot apply it. A class without
+Block support leaves `<release>-storage` Pending; use loop mode there.
+
+`block-mode` and `state-size` are part of the backend identity: an upgrade that
+changes either is rejected. Both PVCs are retained on uninstall.
 
 ## Host integration and image
 

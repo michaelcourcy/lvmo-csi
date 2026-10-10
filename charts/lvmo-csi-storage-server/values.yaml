@@ -1,6 +1,11 @@
 # Privileged, single-replica test server. Never use for production data.
 source-storage-class: ""
 size: 50Gi
+# true backs the VG with a Block-mode PVC of `size` instead of a loop file, and
+# keeps API state on a second Filesystem PVC of `state-size`. The source class
+# must support Block volumes and bind WaitForFirstConsumer.
+block-mode: false
+state-size: 1Gi
 # Empty uses the Helm release name. Must be unique across the cluster.
 dest-storage-class-prefix: ""
 image:

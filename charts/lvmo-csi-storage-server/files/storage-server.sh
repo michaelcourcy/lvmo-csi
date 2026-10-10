@@ -40,29 +40,45 @@ modprobe iscsi_target_mod
 mountpoint -q /sys/kernel/config || mount -t configfs none /sys/kernel/config
 mkdir -p /proc/fs/nfsd
 mountpoint -q /proc/fs/nfsd || mount -t nfsd nfsd /proc/fs/nfsd
-if [[ ! -e "$root/disk.img" ]]; then
-  # Reserve 20% for filesystem, state and LVM overhead, without sparse allocation.
-  case ${BACKING_SIZE:?} in
-    *Gi) requested=$(( ${BACKING_SIZE%Gi} * 1073741824 ));;
-    *Mi) requested=$(( ${BACKING_SIZE%Mi} * 1048576 ));;
-    *G) requested=$(( ${BACKING_SIZE%G} * 1000000000 ));;
-    *M) requested=$(( ${BACKING_SIZE%M} * 1000000 ));;
-    *) echo 'Unsupported backing size'; exit 1;;
-  esac
-  fallocate -l "$((requested * 80 / 100 / 4194304 * 4194304))" "$root/disk.img"
+loop=
+if [[ -n ${BLOCK_DEVICE:-} ]]; then
+  if [[ ! -b $BLOCK_DEVICE ]]; then
+    # The init container saw the device; recreate it from its hex major:minor.
+    read -r major minor <"${BLOCK_DEVICE_NUMBER:?}" || { echo "Block device $BLOCK_DEVICE is missing"; exit 1; }
+    mkdir -p "$(dirname "$BLOCK_DEVICE")"
+    mknod "$BLOCK_DEVICE" b "$((16#$major))" "$((16#$minor))"
+  fi
+  pv=$BLOCK_DEVICE
+  # LVM scans only /dev by default; the device is mounted outside it.
+  scan="scan = [ \"$(dirname "$pv")\" ] use_devicesfile = 0 obtain_device_list_from_udev = 0 "
+else
+  if [[ ! -e "$root/disk.img" ]]; then
+    # Reserve 20% for filesystem, state and LVM overhead, without sparse allocation.
+    case ${BACKING_SIZE:?} in
+      *Gi) requested=$(( ${BACKING_SIZE%Gi} * 1073741824 ));;
+      *Mi) requested=$(( ${BACKING_SIZE%Mi} * 1048576 ));;
+      *G) requested=$(( ${BACKING_SIZE%G} * 1000000000 ));;
+      *M) requested=$(( ${BACKING_SIZE%M} * 1000000 ));;
+      *) echo 'Unsupported backing size'; exit 1;;
+    esac
+    fallocate -l "$((requested * 80 / 100 / 4194304 * 4194304))" "$root/disk.img"
+  fi
+  loop=$(losetup -j "$root/disk.img" -O NAME --noheadings | head -1)
+  if [[ -z "$loop" ]]; then loop=$(losetup --find --show "$root/disk.img"); fi
+  # Bypass the backing file's page cache. Set it on the device so a reused
+  # attachment changes too; filesystems without O_DIRECT stay buffered.
+  losetup --direct-io=on "$loop" || echo "Direct I/O unavailable on $loop; using buffered I/O"
+  echo "Loop $loop direct I/O: $(losetup -n -O DIO "$loop")"
+  pv=$loop
+  scan=
 fi
-loop=$(losetup -j "$root/disk.img" -O NAME --noheadings | head -1)
-if [[ -z "$loop" ]]; then loop=$(losetup --find --show "$root/disk.img"); fi
-# Bypass the backing file's page cache. Set it on the device so a reused
-# attachment changes too; filesystems without O_DIRECT stay buffered.
-losetup --direct-io=on "$loop" || echo "Direct I/O unavailable on $loop; using buffered I/O"
-echo "Loop $loop direct I/O: $(losetup -n -O DIO "$loop")"
 mkdir -p /etc/lvm
-printf 'devices { filter = [ "a|^%s$|", "r|.*|" ] global_filter = [ "a|^%s$|", "r|.*|" ] } activation { udev_sync = 0 udev_rules = 0 }\n' "$loop" "$loop" >/etc/lvm/lvmlocal.conf
-if ! pvs "$loop" >/dev/null 2>&1; then
-  test ! -e "$root/initialized" || { echo 'Existing image lost LVM metadata'; exit 1; }
-  pvcreate "$loop"
-  vgcreate "$vg" "$loop"
+printf 'devices { %sfilter = [ "a|^%s$|", "r|.*|" ] global_filter = [ "a|^%s$|", "r|.*|" ] } activation { udev_sync = 0 udev_rules = 0 }\n' "$scan" "$pv" "$pv" >/etc/lvm/lvmlocal.conf
+if ! pvs "$pv" >/dev/null 2>&1; then
+  test ! -e "$root/initialized" || { echo 'Existing backing store lost LVM metadata'; exit 1; }
+  pvcreate "$pv"
+  # The host must never activate this VG on its own, e.g. after a node reboot.
+  vgcreate --setautoactivation n "$vg" "$pv"
 fi
 if ! lvs "$vg/lvmo-pool" >/dev/null 2>&1; then
   test ! -e "$root/initialized" || { echo "Existing pool missing"; exit 1; }
@@ -119,7 +135,7 @@ cleanup() {
   umount -R "$root/nfs-root/backing/state/volumes" || true
   while read -r path; do umount "$path" || true; done < <(findmnt -rn -o TARGET | awk '/^\/backing\/state\/volumes\//')
   umount "$root/state/volumes" || true
-  vgchange -an "$vg" && losetup -d "$loop"
+  vgchange -an "$vg" && { [[ -z $loop ]] || losetup -d "$loop"; }
 }
 trap cleanup EXIT
 trap 'exit 0' TERM INT

@@ -69,6 +69,21 @@ were not part of this EKS run. Reports (not committed):
 `.test/reports/2026-10-10-eks-paris-independent-helm-charts.md` and
 `.test/reports/2026-10-10-eks-paris-pod-storage-server.md`.
 
+The [block-mode Pod storage-server](../tests/scenarios/pod-storage-server-block.md)
+scenario passed all eight steps on `eks-paris` on 10 October 2026, using commit
+`7fddf0d` plus the block-mode changes, with EBS gp3 backing. The first run
+found that containerd does not create a `volumeDevices` node in a container
+that also mounts the host's `/dev`. An init container now records the device
+number and the server recreates the node; the scenario was then rerun from the
+start. An `Immediate` source class was refused before any resource was
+created. The VG's only physical volume was the Block PVC, with no loop device
+or backing file and auto-activation disabled; the Block and state PVCs were
+placed in the server's zone. NFS and iSCSI hashes held through snapshot
+restores and a graceful replacement that kept the VG UUID. Changing
+`block-mode` or `state-size` on upgrade was refused, and the uninstall guard
+inspected the state PVC. Cleanup matched the host baseline. Report (not
+committed): `.test/reports/2026-10-10-eks-paris-pod-storage-server-block.md`.
+
 Kasten `preferred` fallback and consumption of KEP-3314 remain unvalidated. Passing the independent metadata client does not establish Kasten interoperability. Production load, thin-pool exhaustion recovery, abrupt server failure/fencing, and long-running durability testing remain outside this initial validation.
 
 Release files are in `dist/`; building them does not publish a GitHub release or Docker Hub tag.
