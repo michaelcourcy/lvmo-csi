@@ -55,6 +55,9 @@ stable ClusterIP Service and requiring no node/IP configuration.
    Wait up to 10 minutes for source binding and API readiness.
    Verify one server replica, a loop device backed by the source PVC file, one
    owned VG/thin pool, and the two generated classes pointing at that backend.
+   Run `losetup -l -O NAME,BACK-FILE,DIO` in the server and record the source
+   filesystem type: the loop device must report `DIO 1`, and the server log
+   must contain `direct I/O: 1`.
    Verify the driver-owned VolumeSnapshotClass `lvmo-pod-test-snapshots` exists with driver
    `lvmo.csi.io`, `deletionPolicy: Delete` and annotation
    `k10.kasten.io/is-snapshot-class: "true"`. Verify `lvmo-test-sc-iscsi`
@@ -86,7 +89,8 @@ stable ClusterIP Service and requiring no node/IP configuration.
    restored hashes. Recheck NFS source and iSCSI sessions: both must still use
    the Service IP, with no session using the old Pod IP.
    Confirm that neither the backing image nor API state was initialized again,
-   and that there is only one loop attachment for the backing file.
+   and that there is only one loop attachment for the backing file, still
+   reporting `DIO 1`.
    Then keep both original consumers mounted, gracefully replace the server
    once more, and allow up to 5 minutes after API readiness for reads/writes to
    recover. Use bounded commands (`timeout 300`) to verify the saved hashes and
@@ -136,6 +140,8 @@ stable ClusterIP Service and requiring no node/IP configuration.
   consumers reconnect after replacement and accept new writes within 5 minutes
   of API readiness.
 - Restart reuses existing storage and leaves no duplicate owned attachments.
+- The loop device uses direct I/O on the backing file, before and after
+  replacement, on a source filesystem that supports `O_DIRECT` (ext4, xfs).
 - The source class is independent of lvmo; its local placement constraints are
   honored. Reported thin-pool capacity is smaller than the backing PVC capacity.
 - Server uninstall is refused while the backend is nonempty or inspection

@@ -150,7 +150,12 @@ Without a version Helm selects stable releases; use `--devel` for prereleases.
   LVM VG and `lvmo-pool` thin pool. Reserve space for the source filesystem,
   persistent API metadata and thin-pool metadata; usable capacity is smaller
   than the requested PVC size. Allocate the backing file before serving volumes
-  rather than hiding source exhaustion behind a sparse file.
+  rather than hiding source exhaustion behind a sparse file. The loop device
+  uses direct I/O (`O_DIRECT`) on the backing file, so blocks are not cached a
+  second time in the node's page cache and flushes reach the source disk
+  without buffered writeback. If the source filesystem does not support direct
+  I/O, the server logs it and stays in buffered mode; the startup log records
+  the mode (`direct I/O: 1` or `0`).
 - One IPv4 ClusterIP Service on TCP ports 50051 (API), 2049 (NFSv4) and 3260
   (iSCSI). Generated StorageClasses use `<release>-storage.<namespace>.svc:50051`.
   The server resolves that Service to its ClusterIP for NFS/iSCSI volume metadata;

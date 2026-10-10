@@ -53,6 +53,10 @@ if [[ ! -e "$root/disk.img" ]]; then
 fi
 loop=$(losetup -j "$root/disk.img" -O NAME --noheadings | head -1)
 if [[ -z "$loop" ]]; then loop=$(losetup --find --show "$root/disk.img"); fi
+# Bypass the backing file's page cache. Set it on the device so a reused
+# attachment changes too; filesystems without O_DIRECT stay buffered.
+losetup --direct-io=on "$loop" || echo "Direct I/O unavailable on $loop; using buffered I/O"
+echo "Loop $loop direct I/O: $(losetup -n -O DIO "$loop")"
 mkdir -p /etc/lvm
 printf 'devices { filter = [ "a|^%s$|", "r|.*|" ] global_filter = [ "a|^%s$|", "r|.*|" ] } activation { udev_sync = 0 udev_rules = 0 }\n' "$loop" "$loop" >/etc/lvm/lvmlocal.conf
 if ! pvs "$loop" >/dev/null 2>&1; then
