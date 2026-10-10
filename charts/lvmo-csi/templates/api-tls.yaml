@@ -1,0 +1,116 @@
+{{- /* Defaults here too: --reuse-values upgrades do not see new chart defaults. */}}
+{{- $tls := .Values.apiTLS | default dict -}}
+{{- if and (dig "enabled" true $tls) (not $tls.existingSecret) }}
+{{- if not (.Capabilities.APIVersions.Has "cert-manager.io/v1/ClusterIssuer") }}
+{{- fail "cert-manager is missing. The storage server API uses mutual TLS with certificates from cert-manager: install it first (https://cert-manager.io/docs/installation/helm/), provide your own certificate with apiTLS.existingSecret, or use --set apiTLS.enabled=false for storage servers without TLS." }}
+{{- end }}
+{{- $issuer := $tls.issuer | default "lvmo-csi-api" }}
+{{- $cmNamespace := $tls.certManagerNamespace | default "cert-manager" }}
+{{- /*
+Two CAs. The server CA signs storage server certificates through a
+ClusterIssuer, so that a server can be installed in any namespace. The driver
+CA signs only the driver's certificate, through an Issuer of this namespace:
+whoever can create Certificates elsewhere cannot obtain a certificate that
+storage servers accept as the driver. Both CAs keep their key on renewal, so
+that the copies other components hold stay valid.
+*/}}
+# Server CA, in cert-manager's cluster resource namespace, where a
+# ClusterIssuer reads its key.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ $issuer }}-selfsigned
+  namespace: {{ $cmNamespace }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $issuer }}-server-ca
+  namespace: {{ $cmNamespace }}
+spec:
+  isCA: true
+  commonName: {{ $issuer }}-server-ca
+  secretName: {{ $issuer }}-server-ca
+  duration: 87600h
+  renewBefore: 8760h
+  privateKey: {algorithm: ECDSA, size: 256, rotationPolicy: Never}
+  issuerRef: {kind: Issuer, name: {{ $issuer }}-selfsigned}
+---
+# Signs storage server certificates only: they never authenticate a client.
+# The annotation tells the storage-server chart and
+# scripts/issue-api-server-cert.sh where to find the driver CA.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: {{ $issuer }}
+  annotations:
+    lvmo.csi.io/driver-namespace: {{ .Release.Namespace }}
+spec:
+  ca:
+    secretName: {{ $issuer }}-server-ca
+---
+# The driver trusts the servers through this certificate's ca.crt, which
+# cert-manager keeps equal to the server CA. Its own key is not used.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $issuer }}-server-trust
+  namespace: {{ .Release.Namespace }}
+spec:
+  commonName: {{ $issuer }}-server-trust
+  secretName: {{ $issuer }}-server-trust
+  duration: 2160h
+  renewBefore: 720h
+  usages: [digital signature, server auth]
+  privateKey: {algorithm: ECDSA, size: 256}
+  issuerRef: {kind: ClusterIssuer, name: {{ $issuer }}}
+---
+# Driver CA, in this namespace only.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ $issuer }}-driver-selfsigned
+  namespace: {{ .Release.Namespace }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $issuer }}-driver-ca
+  namespace: {{ .Release.Namespace }}
+spec:
+  isCA: true
+  commonName: {{ $issuer }}-driver-ca
+  secretName: {{ $issuer }}-driver-ca
+  duration: 87600h
+  renewBefore: 8760h
+  privateKey: {algorithm: ECDSA, size: 256, rotationPolicy: Never}
+  issuerRef: {kind: Issuer, name: {{ $issuer }}-driver-selfsigned}
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ $issuer }}-driver
+  namespace: {{ .Release.Namespace }}
+spec:
+  ca:
+    secretName: {{ $issuer }}-driver-ca
+---
+# Client authentication only: storage servers admit no other usage.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: lvmo-csi-api-client
+  namespace: {{ .Release.Namespace }}
+spec:
+  commonName: lvmo-csi-driver
+  secretName: lvmo-csi-api-client
+  duration: 2160h
+  renewBefore: 720h
+  usages: [digital signature, client auth]
+  privateKey: {algorithm: ECDSA, size: 256, rotationPolicy: Always}
+  issuerRef: {kind: Issuer, name: {{ $issuer }}-driver}
+{{- end }}

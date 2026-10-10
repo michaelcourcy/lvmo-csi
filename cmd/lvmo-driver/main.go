@@ -4,12 +4,14 @@ import (
 	"context"
 	"flag"
 	csi "github.com/container-storage-interface/spec/lib/go/csi"
+	"github.com/michaelcourcy/lvmo-csi/internal/apitls"
 	"github.com/michaelcourcy/lvmo-csi/internal/driver"
 	"github.com/michaelcourcy/lvmo-csi/internal/failover"
 	"github.com/michaelcourcy/lvmo-csi/internal/kube"
 	"github.com/michaelcourcy/lvmo-csi/internal/routing"
 	"github.com/michaelcourcy/lvmo-csi/internal/rpcutil"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"log"
 	"net"
 	"os"
@@ -28,6 +30,10 @@ func main() {
 	node := flag.String("node-id", "", "node identity")
 	failoverTimeout := flag.Duration("failover-timeout", 0, "controller only: move workloads off a node that Kubernetes and the storage servers have lost for this long (0 disables)")
 	checkNode := flag.Bool("check-node", false, "check this node's iSCSI prerequisites, then exit (non-zero if one is missing)")
+	var apiTLS apitls.Files
+	flag.StringVar(&apiTLS.Cert, "api-tls-cert", "", "PEM client certificate for the storage servers' API; with --api-tls-key and --api-tls-ca, every API connection uses mutual TLS")
+	flag.StringVar(&apiTLS.Key, "api-tls-key", "", "PEM key of --api-tls-cert")
+	flag.StringVar(&apiTLS.CA, "api-tls-ca", "", "PEM CA bundle that signs the storage servers' certificates")
 	flag.Parse()
 	if *checkNode {
 		os.Exit(runNodeCheck(*node))
@@ -41,6 +47,20 @@ func main() {
 		log.Fatal(e)
 	}
 	defer router.Close()
+	if apiTLS.Enabled() {
+		if _, e = apitls.Client(apiTLS, "localhost:0"); e != nil {
+			log.Fatal(e)
+		}
+		router.Credentials = func(endpoint string) (credentials.TransportCredentials, error) {
+			config, err := apitls.Client(apiTLS, endpoint)
+			if err != nil {
+				return nil, err
+			}
+			return credentials.NewTLS(config), nil
+		}
+	} else {
+		log.Print("WARNING: storage server API connections have no TLS; set --api-tls-cert, --api-tls-key and --api-tls-ca")
+	}
 	nodeID := ""
 	if *node != "" {
 		initiator, err := driver.NodeInitiator(*node)

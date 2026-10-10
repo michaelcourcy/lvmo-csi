@@ -15,6 +15,7 @@ import (
 	pb "github.com/michaelcourcy/lvmo-csi/api/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -40,6 +41,9 @@ func WithHandle(ctx context.Context, handle string) context.Context {
 // retained snapshots whose original PVC and StorageClass no longer exist.
 type Discover func(context.Context) ([]string, error)
 type Router struct {
+	// Credentials returns the transport security for one endpoint; nil
+	// connects without TLS.
+	Credentials func(endpoint string) (credentials.TransportCredentials, error)
 	fallback    string
 	discover    Discover
 	mu          sync.Mutex
@@ -131,7 +135,14 @@ func (r *Router) client(endpoint string) (pb.StorageClient, error) {
 	if c := r.clients[endpoint]; c != nil {
 		return c, nil
 	}
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	creds := insecure.NewCredentials()
+	if r.Credentials != nil {
+		var err error
+		if creds, err = r.Credentials(endpoint); err != nil {
+			return nil, status.Errorf(codes.Unavailable, "TLS for %s: %v", endpoint, err)
+		}
+	}
+	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return nil, err
 	}

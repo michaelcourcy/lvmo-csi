@@ -14,6 +14,7 @@ import (
 	"github.com/michaelcourcy/lvmo-csi/internal/backend"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -317,5 +318,25 @@ func TestRemovedBackendIsNotKeptAliveByConnectionCache(t *testing.T) {
 	}
 	if len(volumes.Volumes) != 1 {
 		t.Fatal("cached connection resurrected a removed backend")
+	}
+}
+
+func TestCredentialsAreChosenPerEndpoint(t *testing.T) {
+	router, err := New("", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer router.Close()
+	asked := []string{}
+	router.Credentials = func(endpoint string) (credentials.TransportCredentials, error) {
+		asked = append(asked, endpoint)
+		return nil, io.ErrUnexpectedEOF
+	}
+	_, err = router.CreateVolume(WithEndpoint(context.Background(), "Storage.Example:50051"), &pb.CreateVolumeRequest{Name: "tls", Bytes: 4096})
+	if status.Code(err) != codes.Unavailable || !strings.Contains(err.Error(), "storage.example:50051") {
+		t.Fatalf("unexpected error %v", err)
+	}
+	if len(asked) != 1 || asked[0] != "storage.example:50051" {
+		t.Fatalf("credentials asked for %v", asked)
 	}
 }

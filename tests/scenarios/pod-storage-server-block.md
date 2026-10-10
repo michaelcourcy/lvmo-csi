@@ -27,7 +27,8 @@ The default loop mode is covered by [pod-storage-server](pod-storage-server.md).
   a temporary one the run creates, that binds `Immediate`. Record their
   provisioners and binding modes.
 - A driver release is installed with a VolumeSnapshotClass for `lvmo.csi.io`;
-  the snapshot CRDs and controller are installed.
+  the snapshot CRDs and controller are installed, and so is cert-manager (the
+  charts default to mutual TLS on the API).
 - The development server image is in the environment's permitted registry.
   No release or class name collides with this test.
 - Record baseline loop devices, VGs, NFS exports and iSCSI targets on the nodes.

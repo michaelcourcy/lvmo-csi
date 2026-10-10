@@ -1,3 +1,7 @@
+{{- $tls := .Values.apiTLS | default dict -}}
+{{- $tlsEnabled := dig "enabled" true $tls -}}
+{{- $tlsIssuer := $tls.issuer | default "lvmo-csi-api" -}}
+{{- $tlsArgs := ternary ", \"--api-tls-cert=/api-tls/tls.crt\", \"--api-tls-key=/api-tls/tls.key\", \"--api-tls-ca=/api-tls/ca.crt\"" "" $tlsEnabled -}}
 apiVersion: storage.k8s.io/v1
 kind: CSIDriver
 metadata:
@@ -104,9 +108,12 @@ spec:
       - name: driver
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
-        args: ["--endpoint=unix:///csi/csi.sock", "--api-endpoint={{ .Values.apiEndpoint }}", "--failover-timeout={{ if .Values.failover.enabled }}{{ .Values.failover.timeout }}{{ else }}0{{ end }}"]
+        args: ["--endpoint=unix:///csi/csi.sock", "--api-endpoint={{ .Values.apiEndpoint }}", "--failover-timeout={{ if .Values.failover.enabled }}{{ .Values.failover.timeout }}{{ else }}0{{ end }}"{{ $tlsArgs }}]
         volumeMounts:
         - {name: socket, mountPath: /csi}
+        {{- if $tlsEnabled }}
+        - {name: api-tls, mountPath: /api-tls, readOnly: true}
+        {{- end }}
       {{- range $name, $image := dict "provisioner" .Values.sidecars.provisioner "attacher" .Values.sidecars.attacher "snapshotter" .Values.sidecars.snapshotter "resizer" .Values.sidecars.resizer }}
       - name: {{ $name }}
         image: {{ $image }}
@@ -132,6 +139,18 @@ spec:
       volumes:
       - name: socket
         emptyDir: {}
+      {{- if $tlsEnabled }}
+      - name: api-tls
+        {{- if $tls.existingSecret }}
+        secret: {secretName: {{ $tls.existingSecret }}}
+        {{- else }}
+        # The driver's certificate, and the server CA to check the servers.
+        projected:
+          sources:
+          - secret: {name: lvmo-csi-api-client, items: [{key: tls.crt, path: tls.crt}, {key: tls.key, path: tls.key}]}
+          - secret: {name: {{ $tlsIssuer }}-server-trust, items: [{key: ca.crt, path: ca.crt}]}
+        {{- end }}
+      {{- end }}
       {{- if .Values.metadata.enabled }}
       - name: tls
         secret:
@@ -183,7 +202,7 @@ spec:
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         securityContext: {privileged: true}
-        args: ["--endpoint=unix:///csi/csi.sock", "--api-endpoint={{ .Values.apiEndpoint }}", "--node-id=$(NODE_NAME)"]
+        args: ["--endpoint=unix:///csi/csi.sock", "--api-endpoint={{ .Values.apiEndpoint }}", "--node-id=$(NODE_NAME)"{{ $tlsArgs }}]
         env:
         {{- if .Values.iscsiHostProc }}
         - {name: LVMO_ISCSI_HOST_PROC, value: /host-proc}
@@ -200,6 +219,9 @@ spec:
         - {name: iscsi-state, mountPath: /var/lib/iscsi}
         - {name: iscsi-run, mountPath: /run/iscsid}
         - {name: state, mountPath: /var/lib/lvmo-node}
+        {{- if $tlsEnabled }}
+        - {name: api-tls, mountPath: /api-tls, readOnly: true}
+        {{- end }}
         {{- if .Values.iscsiHostProc }}
         - {name: host-proc, mountPath: /host-proc}
         {{- end }}
@@ -232,6 +254,18 @@ spec:
       {{- end }}
       - name: state
         hostPath: {path: /var/lib/lvmo-node, type: DirectoryOrCreate}
+      {{- if $tlsEnabled }}
+      - name: api-tls
+        {{- if $tls.existingSecret }}
+        secret: {secretName: {{ $tls.existingSecret }}}
+        {{- else }}
+        # The driver's certificate, and the server CA to check the servers.
+        projected:
+          sources:
+          - secret: {name: lvmo-csi-api-client, items: [{key: tls.crt, path: tls.crt}, {key: tls.key, path: tls.key}]}
+          - secret: {name: {{ $tlsIssuer }}-server-trust, items: [{key: ca.crt, path: ca.crt}]}
+        {{- end }}
+      {{- end }}
 {{- if .Values.openshift }}
 ---
 apiVersion: security.openshift.io/v1

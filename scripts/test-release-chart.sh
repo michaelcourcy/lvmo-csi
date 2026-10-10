@@ -3,6 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj /CN=driver-ca-fixture -keyout /dev/null -out "$tmp/driver-ca.crt" 2>/dev/null
 for version in v1.2.3 v1.2.3-rc.1 dev; do
   chart_version=${version#v}
   if [[ $version == dev ]]; then chart_version=0.0.0-dev; fi
@@ -14,10 +15,10 @@ for version in v1.2.3 v1.2.3-rc.1 dev; do
     grep -Fxq "version: $chart_version" "$tmp/metadata"
     grep -Eq "^appVersion: [\"']?$version[\"']?$" "$tmp/metadata"
     if [[ $name == lvmo-csi ]]; then
-      args=(--api-versions snapshot.storage.k8s.io/v1/VolumeSnapshotClass)
+      args=(--api-versions snapshot.storage.k8s.io/v1/VolumeSnapshotClass --api-versions cert-manager.io/v1/ClusterIssuer)
       count=3; override=driver
     else
-      args=(--set source-storage-class=external)
+      args=(--set source-storage-class=external --api-versions cert-manager.io/v1/Certificate --set-file tls.clientCA="$tmp/driver-ca.crt")
       count=2; override=server
     fi
     helm template check "$chart" "${args[@]}" >"$tmp/defaults"

@@ -18,7 +18,7 @@ single VolumeSnapshotClass routes snapshots to each source backend.
 
 - A named instance allows installing one run-owned CSI driver, privileged test
   servers, and the required host kernel access. No existing driver installation
-  may be replaced. Snapshot CRDs/controller and NFS/iSCSI clients are ready.
+  may be replaced. Snapshot CRDs/controller, cert-manager and NFS/iSCSI clients are ready.
 - An independent non-lvmo Filesystem source class can supply three 5Gi RWO PVCs.
   Record its name, provisioner, binding mode and topology. Nodes can reach the
   servers' Service network. Record host loop/VG/export/target baselines.

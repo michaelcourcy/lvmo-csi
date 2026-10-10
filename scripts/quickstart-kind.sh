@@ -22,6 +22,9 @@ done
 for manifest in rbac-snapshot-controller.yaml setup-snapshot-controller.yaml; do
   kubectl --context "$context" apply -f "https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/v8.5.0/deploy/kubernetes/snapshot-controller/${manifest}"
 done
+# The driver and the storage server authenticate each other with certificates
+# from cert-manager.
+helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager --version v1.21.2 --kube-context "$context" -n cert-manager --create-namespace --set crds.enabled=true --wait --timeout 5m
 cat >.test/kind/driver-values.yaml <<VALUES
 image:
   repository: lvmo-local

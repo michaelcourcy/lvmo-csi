@@ -30,6 +30,8 @@ stable ClusterIP Service and requiring no node/IP configuration.
   class may use WaitForFirstConsumer; placement must respect PV node affinity.
 - The instance permits temporarily cordoning the server node without eviction.
 - A second node can mount both protocols. Snapshot CRDs/controller are installed.
+- cert-manager is installed: both charts default to mutual TLS on the API
+  ([api-mtls](api-mtls.md)).
 - The development server image is available in the environment's permitted
   registry. No Helm release or generated class name collides with this test.
 - Record baseline loop devices, VGs, NFS exports and iSCSI targets on the server

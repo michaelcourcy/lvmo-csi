@@ -10,6 +10,33 @@
 {{- /* Defaults here too: --reuse-values upgrades do not see new chart defaults. */}}
 {{- $stateSize := index $v "state-size" | default "1Gi" -}}
 {{- $stateClaim := ternary (printf "%s-state" $name) $name $block -}}
+{{- $tls := $v.tls | default dict -}}
+{{- $tlsEnabled := dig "enabled" true $tls -}}
+{{- if not (kindIs "bool" $tlsEnabled) }}{{ fail "tls.enabled must be true or false" }}{{ end }}
+{{- $tlsIssuer := $tls.issuer | default "lvmo-csi-api" -}}
+{{- $tlsSecret := $tls.existingSecret | default (printf "%s-api-tls" $name) -}}
+{{- $tlsClientCA := $tls.clientCA | default "" -}}
+{{- if and $tlsEnabled (not $tls.existingSecret) }}
+{{- if not (.Capabilities.APIVersions.Has "cert-manager.io/v1/Certificate") }}{{ fail "cert-manager is missing. The API uses mutual TLS with a certificate from cert-manager: install cert-manager, then the lvmo-csi driver chart (it creates the ClusterIssuer), then this chart. Or set tls.existingSecret, or tls.enabled=false for a driver installed with apiTLS.enabled=false." }}{{ end }}
+{{- /*
+The server admits only clients signed by the driver CA, which lives in the
+driver's namespace, named by the ClusterIssuer's annotation. Only its public
+certificate is copied. lookup returns nothing offline (helm template): then
+tls.clientCA must give it.
+*/}}
+{{- if lookup "v1" "Namespace" "" "kube-system" }}
+{{- $issuer := lookup "cert-manager.io/v1" "ClusterIssuer" "" $tlsIssuer }}
+{{- if not $issuer }}{{ fail (printf "ClusterIssuer %s not found: install the lvmo-csi driver chart first, with apiTLS enabled" $tlsIssuer) }}{{ end }}
+{{- if not $tlsClientCA }}
+{{- $driverNamespace := index ($issuer.metadata.annotations | default dict) "lvmo.csi.io/driver-namespace" }}
+{{- if not $driverNamespace }}{{ fail (printf "ClusterIssuer %s has no lvmo.csi.io/driver-namespace annotation: upgrade the lvmo-csi driver chart, or set tls.clientCA" $tlsIssuer) }}{{ end }}
+{{- $ca := lookup "v1" "Secret" $driverNamespace (printf "%s-driver-ca" $tlsIssuer) }}
+{{- if not $ca }}{{ fail (printf "Driver CA Secret %s/%s-driver-ca not found: wait until cert-manager has issued it (helm install of the driver with --wait), then retry" $driverNamespace $tlsIssuer) }}{{ end }}
+{{- $tlsClientCA = index $ca.data "ca.crt" | b64dec }}
+{{- end }}
+{{- end }}
+{{- if not (contains "BEGIN CERTIFICATE" $tlsClientCA) }}{{ fail (printf "tls.clientCA is required when rendering offline (helm template): pass the driver CA with --set-file tls.clientCA=driver-ca.crt, extracted with: kubectl -n <driver-namespace> get secret %s-driver-ca -o jsonpath='{.data.ca\\.crt}' | base64 -d" $tlsIssuer) }}{{ end }}
+{{- end }}
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $prefix) }}{{ fail "invalid destination StorageClass prefix" }}{{ end }}
 {{- if gt (len $prefix) 55 }}{{ fail "destination prefix too long" }}{{ end }}
 {{- if not (regexMatch "^[1-9][0-9]*(Gi|G|Mi|M)$" $v.size) }}{{ fail "size must be a positive Kubernetes quantity, e.g. 5Gi" }}{{ end }}
@@ -45,6 +72,36 @@ spec:
     port: 3260
     targetPort: 3260
 ---
+{{- if and $tlsEnabled (not $tls.existingSecret) }}
+# The driver CA: the only issuer of client certificates the server admits.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-api-client-ca
+data:
+  ca.crt: |
+    {{- $tlsClientCA | trim | nindent 4 }}
+---
+# Server authentication only, for the names the generated StorageClasses use.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $tlsSecret }}
+spec:
+  secretName: {{ $tlsSecret }}
+  commonName: {{ $address }}
+  dnsNames:
+  - {{ $name }}
+  - {{ $name }}.{{ .Release.Namespace }}
+  - {{ $address }}
+  - {{ $address }}.cluster.local
+  duration: 2160h
+  renewBefore: 720h
+  usages: [digital signature, server auth]
+  privateKey: {algorithm: ECDSA, size: 256, rotationPolicy: Always}
+  issuerRef: {kind: ClusterIssuer, name: {{ $tlsIssuer }}}
+---
+{{- end }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -146,6 +203,10 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: status.podIP
+        {{- if $tlsEnabled }}
+        - name: TLS_DIR
+          value: /api-tls
+        {{- end }}
         readinessProbe:
           tcpSocket:
             port: 50051
@@ -164,6 +225,11 @@ spec:
           readOnly: true
         - name: configfs
           mountPath: /sys/kernel/config
+        {{- if $tlsEnabled }}
+        - name: api-tls
+          mountPath: /api-tls
+          readOnly: true
+        {{- end }}
         {{- if $block }}
         - name: block-info
           mountPath: /lvmo-dev-info
@@ -189,6 +255,22 @@ spec:
       - name: configfs
         hostPath:
           path: /sys/kernel/config
+      {{- if $tlsEnabled }}
+      - name: api-tls
+        {{- if $tls.existingSecret }}
+        secret:
+          secretName: {{ $tlsSecret }}
+        {{- else }}
+        projected:
+          sources:
+          - secret:
+              name: {{ $tlsSecret }}
+              items: [{key: tls.crt, path: tls.crt}, {key: tls.key, path: tls.key}]
+          - configMap:
+              name: {{ $name }}-api-client-ca
+              items: [{key: ca.crt, path: ca.crt}]
+        {{- end }}
+      {{- end }}
 {{- range $protocol := list "iscsi" "nfs" }}
 ---
 apiVersion: storage.k8s.io/v1

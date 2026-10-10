@@ -163,7 +163,41 @@ sudo install -m 0755 "lvmo-csi-linux-$ARCH" /usr/local/bin/lvmo-csi
 
 Only `lvmo-csi` runs on the server. `lvmo-driver` and `lvmo-metadata` run in the cluster, from the image.
 
-Create the unit. Replace `10.0.0.10` with the address the nodes use to reach the server for NFS and iSCSI, and list every VG the server serves:
+### Give the API its certificate
+
+The API manages every volume on the server: whoever can call it can attach a volume to their own initiator, read it, or delete it. It therefore admits only the lvmo driver, with mutual TLS: the server proves its name to the driver, and the driver presents a client certificate. With the defaults of the `lvmo-csi` chart, [cert-manager](https://cert-manager.io) manages two CAs in the cluster: the server CA, whose ClusterIssuer `lvmo-csi-api` signs every storage server's certificate, and the driver CA, which signs only the driver's certificate and can be used only in the driver's namespace. The server trusts the driver CA, and the driver trusts the server CA. A certificate someone obtains from the ClusterIssuer is therefore refused as a client ([details](pod-storage-server.md#mutual-tls)).
+
+Install cert-manager, then the driver (see the [README](../README.md#kubernetes--openshift)):
+
+```sh
+helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager --version v1.21.2 \
+  --namespace cert-manager --create-namespace --set crds.enabled=true --wait
+helm upgrade --install lvmo lvmo/lvmo-csi -n lvmo-system --create-namespace --wait
+```
+
+Then, from a workstation with `kubectl`, `jq` and `openssl`, issue the server's certificate. List every name and address StorageClasses will use in `endpoint`: the driver refuses a server whose certificate does not name the endpoint's host.
+
+```sh
+scripts/issue-api-server-cert.sh storage-a ./storage-a-tls storage-a.example.internal 10.0.0.10
+```
+
+The script creates a cert-manager `Certificate` named `storage-a-api-tls` in the driver's namespace (which the ClusterIssuer names; `NAMESPACE` overrides it), for server authentication only, valid for one year. It writes `tls.crt` and `tls.key`, and `ca.crt`, the public certificate of the driver CA. Running it requires rights to create Certificates and read Secrets in the driver's namespace. Copy them to the server, readable by root only:
+
+```sh
+sudo install -d -m 0700 /etc/lvmo/tls
+sudo install -m 0600 tls.crt tls.key ca.crt /etc/lvmo/tls/   # from ./storage-a-tls, copied over SSH for example
+rm -r ./storage-a-tls
+```
+
+cert-manager renews the certificate in the cluster 90 days before it expires. Run the script again then and copy the new files: the API reads them at every new connection, so no restart is needed. Check the date with `sudo openssl x509 -enddate -noout -in /etc/lvmo/tls/tls.crt`. The driver's own certificate is renewed and reloaded automatically, and the driver needs nothing for a new server: it trusts the server CA, whichever server it signed.
+
+**Without cert-manager**, use your own PKI, with one CA for servers and one for the driver, used for nothing else. The server certificate must have the extended key usage `serverAuth` and name the endpoint's host. The driver's must have `clientAuth`: the API refuses any other certificate, including another server's. The server's `ca.crt` is the driver CA. Store the driver's certificate in a Secret in its namespace (`kubectl -n lvmo-system create secret generic lvmo-api-client --from-file=tls.crt --from-file=tls.key --from-file=ca.crt`, where `ca.crt` signs the servers' certificates) and install the chart with `--set apiTLS.existingSecret=lvmo-api-client`.
+
+`--set apiTLS.enabled=false` on the chart, and starting the API without the three `--tls-*` options, turn TLS off on both sides. Do it only on an isolated test network: the API then logs a warning at startup, and any process that can reach port 50051 can delete every volume.
+
+### Create the unit
+
+Replace `10.0.0.10` with the address the nodes use to reach the server for NFS and iSCSI, and list every VG the server serves:
 
 ```sh
 sudo tee /etc/systemd/system/lvmo-api.service <<'UNIT'
@@ -172,7 +206,7 @@ Description=lvmo storage API
 Wants=network-online.target
 After=network-online.target local-fs.target nfs-server.service
 [Service]
-ExecStart=/usr/local/bin/lvmo-csi --server=10.0.0.10 -P 50051 lvmo-data
+ExecStart=/usr/local/bin/lvmo-csi --server=10.0.0.10 -P 50051 --tls-cert=/etc/lvmo/tls/tls.crt --tls-key=/etc/lvmo/tls/tls.key --tls-client-ca=/etc/lvmo/tls/ca.crt lvmo-data
 Restart=on-failure
 RestartSec=5
 [Install]
@@ -180,7 +214,7 @@ WantedBy=multi-user.target
 UNIT
 sudo systemctl daemon-reload
 sudo systemctl enable --now lvmo-api
-journalctl -u lvmo-api -n 20 --no-pager   # "lvmo API listening on [::]:50051"
+journalctl -u lvmo-api -n 20 --no-pager   # "lvmo API listening on [::]:50051 (mutual TLS: true)"
 ```
 
 At startup the API checks that each VG has a thin pool, then restores every volume: it activates the LVs, remounts and re-exports NFS volumes, and recreates iSCSI targets. No fstab entries, `/etc/exports` lines or `targetcli` configuration are needed, and you should not edit the ones it writes (`/etc/exports.d/lvmo-*.exports`, the LIO configuration). If the disks are not ready yet at boot, the API exits and systemd restarts it 5 seconds later.
@@ -191,6 +225,8 @@ The API's options:
 |---|---|---|
 | `--server` | The address of the default route | The NFS and iSCSI address given to nodes. Set it explicitly with several interfaces, NAT, or a DNS name |
 | `-P` | `50051` | The management API port; StorageClasses name it in `endpoint` |
+| `--tls-cert`, `--tls-key` | none | The API's server certificate and key (PEM) |
+| `--tls-client-ca` | none | The driver CA: the CA bundle that signs the driver's client certificate. With the two options above, only clients with such a certificate are served. Without all three, the API has no TLS |
 | `--root` | `/var/lib/lvmo` | The state directory, and where NFS volumes are mounted. Only one API process may use it |
 | `--pool` | `lvmo-pool` | The thin pool's name, the same in every VG |
 | `--nfs-clients` | `*` | The NFS export client selector, for example `10.0.0.0/24` |
@@ -218,7 +254,7 @@ sudo systemctl enable --now fstrim.timer
 
 ## 7. Open the network to the nodes only
 
-Nodes use three TCP ports: 50051 (management API), 2049 (NFS 4.1) and 3260 (iSCSI). The management API and iSCSI targets have no authentication, and NFS exports use `no_root_squash`. **Open them to the cluster nodes' network only, never publicly.** With `ufw`, for nodes in `10.0.0.0/24`:
+Nodes use three TCP ports: 50051 (management API), 2049 (NFS 4.1) and 3260 (iSCSI). The management API requires the driver's client certificate (section 5), but the data ports have no authentication: NFS exports use `no_root_squash`, and an iSCSI target admits any initiator name it lists. **Open them to the cluster nodes' network only, never publicly.** With `ufw`, for nodes in `10.0.0.0/24`:
 
 ```sh
 sudo ufw allow OpenSSH
@@ -270,6 +306,14 @@ From every Kubernetes node (for example in `kubectl debug node/<name> -it --imag
 nc -zv 10.0.0.10 50051
 nc -zv 10.0.0.10 2049
 ```
+
+Check that the API refuses a client without the driver's certificate. From any host that reaches it:
+
+```sh
+sleep 1 | openssl s_client -connect 10.0.0.10:50051 -servername storage-a.example.internal -alpn h2 2>&1 | grep -E 'subject=|alert'
+```
+
+It prints the server certificate's subject, then the alert `certificate required`: the server refused a client without a certificate. With TLS 1.3 the alert arrives just after the handshake, which is why `sleep 1` keeps the connection open; with `</dev/null`, `openssl` closes before receiving it.
 
 Then install the chart and a StorageClass with `endpoint: <server>:50051` and `vg: lvmo-data`, and create a test PVC for each protocol.
 

@@ -6,6 +6,26 @@ image:
 # Optional fallback for legacy handles and standalone deployments.
 # New StorageClasses select their backend with parameters.endpoint.
 apiEndpoint: ""
+# Mutual TLS on the storage servers' management API. Without it, any pod that
+# can reach a storage server's API port can read, attach and delete volumes.
+# By default cert-manager issues the certificates: install it first. The chart
+# creates two CAs. The server CA, in cert-manager's namespace, with a
+# ClusterIssuer that signs the storage servers' certificates (the
+# lvmo-csi-storage-server chart uses it). The driver CA, with an Issuer of this
+# namespace only, that signs the driver's client certificate: a certificate
+# obtained from the ClusterIssuer cannot act as the driver.
+# docs/pod-storage-server.md#mutual-tls explains it; docs/storage-server.md
+# explains how to give a standalone server its certificate.
+apiTLS:
+  enabled: true
+  # ClusterIssuer created by this chart, and prefix of its CAs' resources.
+  issuer: lvmo-csi-api
+  # cert-manager's cluster resource namespace (its --cluster-resource-namespace).
+  certManagerNamespace: cert-manager
+  # Instead of cert-manager: a Secret in the release namespace with the
+  # driver's client certificate (tls.crt, tls.key) and the CA bundle that
+  # signs the storage servers' certificates (ca.crt).
+  existingSecret: ""
 kubeletRoot: /var/lib/kubelet
 openshift: false
 metadata:

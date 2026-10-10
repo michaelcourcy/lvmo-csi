@@ -60,7 +60,9 @@ sudo bash scripts/quickstart-kind.sh
 The script builds a custom [Kind node image](../examples/kind/Dockerfile) with
 NFS/iSCSI userspace tools and creates `lvmo-pod` using the pinned Kubernetes
 1.35.0 image. It builds and loads both local lvmo images, installs the snapshot
-controller, and installs two independent Helm releases into `lvmo-system`:
+controller and cert-manager (which issues the certificates of the driver and
+the server, for [mutual TLS](pod-storage-server.md#mutual-tls) on the API), and
+installs two independent Helm releases into `lvmo-system`:
 `lvmo` for the driver and `server-a` for the storage server. The driver creates
 the shared `lvmo-snapshots` class with Kasten annotation enabled by default.
 

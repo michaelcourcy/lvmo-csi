@@ -1,7 +1,11 @@
 # Pod-based test storage server
 
-> **Prerelease:** the two-chart installation below uses `v0.2.0-alpha.1`.
+> **Prerelease:** the two-chart installation below uses `v0.2.0-alpha.2`.
 > Older combined charts still use `create-storage-server`.
+> Since `v0.2.0-alpha.2` the driver and its storage servers use mutual TLS on
+> the API, with certificates from cert-manager: install cert-manager before
+> upgrading, then upgrade the driver, then each server, and give standalone
+> servers their certificate ([guide](storage-server.md#give-the-api-its-certificate)).
 
 Install one `lvmo/lvmo-csi` driver release per cluster and independently install
 one or more `lvmo/lvmo-csi-storage-server` releases. The containerized server is
@@ -21,14 +25,18 @@ The Docker Hub repositories remain `michaelcourcy/lvmo-csi` and
 ## Installation and values
 
 Install the snapshot CRDs/controller separately; snapshot-class creation is
-enabled by default. Install the driver first, then a server (replace the source class):
+enabled by default. Install cert-manager, then the driver, then a server
+(replace the source class). The order matters: the driver chart creates the
+ClusterIssuer that signs the server's certificate ([Mutual TLS](#mutual-tls)).
 
 ```sh
+helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager --version v1.21.2 \
+  --namespace cert-manager --create-namespace --set crds.enabled=true --wait
 helm repo add lvmo https://michaelcourcy.github.io/lvmo-csi
 helm repo update
-helm upgrade --install lvmo lvmo/lvmo-csi --version 0.2.0-alpha.1 \
+helm upgrade --install lvmo lvmo/lvmo-csi --version 0.2.0-alpha.2 \
   --namespace lvmo-csi --create-namespace
-helm upgrade --install server-a lvmo/lvmo-csi-storage-server --version 0.2.0-alpha.1 \
+helm upgrade --install server-a lvmo/lvmo-csi-storage-server --version 0.2.0-alpha.2 \
   --namespace lvmo-csi --create-namespace \
   --set source-storage-class=my-local-storageclass
 ```
@@ -53,6 +61,14 @@ it and explicitly deleting its retained backing PVC for a fresh installation.
 | Server | `state-size` | `1Gi`; size of the Filesystem state PVC in block mode |
 | Server | `dest-storage-class-prefix` | Empty means the server release name; explicit override allowed |
 | Server | `resources` | `{}`; no chart-supplied CPU/memory requests or limits |
+| Driver | `apiTLS.enabled` | `true`; mutual TLS to every storage server's API, with cert-manager |
+| Driver | `apiTLS.issuer` | `lvmo-csi-api`; the ClusterIssuer the chart creates, and the prefix of its CA resources |
+| Driver | `apiTLS.certManagerNamespace` | `cert-manager`; where cert-manager keeps ClusterIssuer keys |
+| Driver | `apiTLS.existingSecret` | Empty; a Secret with your own client certificate instead of cert-manager |
+| Server | `tls.enabled` | `true`; serve the API with mutual TLS only |
+| Server | `tls.issuer` | `lvmo-csi-api`; must match the driver's `apiTLS.issuer` |
+| Server | `tls.clientCA` | Empty; the driver CA certificate, needed only to render offline |
+| Server | `tls.existingSecret` | Empty; a Secret with your own server certificate instead of cert-manager |
 
 When creation is enabled, install/upgrade must check that the
 `snapshot.storage.k8s.io/v1` VolumeSnapshotClass API is available. If it is
@@ -114,7 +130,7 @@ in `lvmo-csi`, install two servers in `lvmo-storage`:
 
 ```sh
 for server in server-a server-b; do
-  helm upgrade --install "$server" lvmo/lvmo-csi-storage-server --version 0.2.0-alpha.1 \
+  helm upgrade --install "$server" lvmo/lvmo-csi-storage-server --version 0.2.0-alpha.2 \
     --namespace lvmo-storage --create-namespace \
     --set source-storage-class=my-local-storageclass
 done
@@ -139,6 +155,62 @@ released charts, pin the same `--version` for both initially; independent Helm
 upgrades do not imply compatibility between arbitrary application versions.
 Without a version Helm selects stable releases; use `--devel` for prereleases.
 
+## Mutual TLS
+
+The Service publishes the API to every pod in the cluster, and the API can
+attach, read and delete any volume of the server. So it serves only clients
+with the driver's certificate, and the driver checks the server's. The driver
+chart creates two CAs with cert-manager, both for ten years, keeping their key
+on renewal:
+
+| CA | Issuer | Signs | Who can obtain a certificate |
+|---|---|---|---|
+| Server CA (`lvmo-csi-api-server-ca`, in cert-manager's namespace) | ClusterIssuer `lvmo-csi-api` | Every storage server's certificate | Anyone allowed to create cert-manager Certificates, in any namespace |
+| Driver CA (`lvmo-csi-api-driver-ca`, in the driver's namespace) | Issuer `lvmo-csi-api-driver`, in the driver's namespace | The driver's certificate only | Only who can create resources in the driver's namespace, who can already read the driver's key |
+
+Each side trusts the other side's CA only:
+
+- The driver's certificate (`lvmo-csi-api-client`, client authentication only,
+  90 days) and the server CA are mounted at `/api-tls` in the controller and
+  the node plugin. The driver gets the server CA from the `ca.crt` of a small
+  certificate the chart requests from the ClusterIssuer
+  (`lvmo-csi-api-server-trust`), which cert-manager keeps current.
+- Each server release gets a Certificate `<release>-storage-api-tls` from the
+  ClusterIssuer: server authentication only, for `<release>-storage`,
+  `<release>-storage.<namespace>`, `<release>-storage.<namespace>.svc` and the
+  same with `.cluster.local`. The chart also copies the driver CA's public
+  certificate into ConfigMap `<release>-storage-api-client-ca`: the server
+  admits only client certificates signed by it. A certificate obtained from
+  the ClusterIssuer, in any namespace, is refused as a client, and so is
+  another server's.
+- cert-manager renews the certificates 30 days before they expire. The server
+  and the driver read the files at every new connection, so no pod restarts.
+
+The server chart finds the driver CA in the driver's namespace, which the
+ClusterIssuer names in its annotation `lvmo.csi.io/driver-namespace`: install
+the driver first, with `--wait`. It reads it again at every `helm upgrade`. If
+the driver CA changes (it is renewed with the same key one year before it
+expires, or recreated after the driver's namespace is deleted), run
+`helm upgrade` on each server release.
+
+`helm template` and Argo CD render offline and cannot read the cluster. Then
+give the driver CA explicitly:
+
+```sh
+kubectl -n lvmo-csi get secret lvmo-csi-api-driver-ca -o jsonpath='{.data.ca\.crt}' | base64 -d >driver-ca.crt
+helm template server-a lvmo/lvmo-csi-storage-server --set-file tls.clientCA=driver-ca.crt ...
+```
+
+Installing a server fails if cert-manager, the ClusterIssuer or the driver CA
+is missing, or offline without `tls.clientCA`.
+
+`tls.existingSecret` and `apiTLS.existingSecret` take certificates from your
+own PKI instead, with `tls.crt`, `tls.key` and `ca.crt` keys, where `ca.crt` is
+the other side's CA; cert-manager is then not needed. Keep the CA that signs
+the driver's certificate for that use only. `tls.enabled=false` with `apiTLS.enabled=false` turns TLS off;
+use it only on an isolated test cluster. The NFS and iSCSI ports remain
+unauthenticated, as on a standalone server.
+
 ## Resources and data path
 
 - One source RWO Filesystem PVC in the release namespace, requesting `size` from
@@ -158,7 +230,7 @@ Without a version Helm selects stable releases; use `--devel` for prereleases.
   without buffered writeback. If the source filesystem does not support direct
   I/O, the server logs it and stays in buffered mode; the startup log records
   the mode (`direct I/O: 1` or `0`).
-- One IPv4 ClusterIP Service on TCP ports 50051 (API), 2049 (NFSv4) and 3260
+- One IPv4 ClusterIP Service on TCP ports 50051 (API, mutual TLS), 2049 (NFSv4) and 3260
   (iSCSI). Generated StorageClasses use `<release>-storage.<namespace>.svc:50051`.
   The server resolves that Service to its ClusterIP for NFS/iSCSI volume metadata;
   client nodes must be able to reach the Service network.

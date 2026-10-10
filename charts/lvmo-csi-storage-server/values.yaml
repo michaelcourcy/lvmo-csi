@@ -8,6 +8,23 @@ block-mode: false
 state-size: 1Gi
 # Empty uses the Helm release name. Must be unique across the cluster.
 dest-storage-class-prefix: ""
+# Mutual TLS on the management API (TCP 50051): only the lvmo driver, with its
+# client certificate, can manage this server's volumes. Requires cert-manager
+# and the lvmo-csi driver chart, installed first: its ClusterIssuer
+# (apiTLS.issuer) signs this server's certificate, and the chart copies the
+# public certificate of the driver CA from the driver's namespace at each
+# install and upgrade. The server certificate is renewed by cert-manager and
+# reloaded without restarting the server.
+tls:
+  enabled: true
+  issuer: lvmo-csi-api
+  # The driver CA's certificate (PEM). Needed only for offline rendering
+  # (helm template, Argo CD), where the chart cannot read the driver namespace.
+  clientCA: ""
+  # Instead of cert-manager: a Secret in the release namespace with the server
+  # certificate (tls.crt, tls.key) for <release>-storage.<namespace>.svc and
+  # the CA that signs the driver's client certificate (ca.crt).
+  existingSecret: ""
 image:
   repository: michaelcourcy/lvmo-csi-storage-server
   # Empty uses Chart.appVersion.

@@ -4,9 +4,11 @@ import (
 	"context"
 	"flag"
 	pb "github.com/michaelcourcy/lvmo-csi/api/v1"
+	"github.com/michaelcourcy/lvmo-csi/internal/apitls"
 	"github.com/michaelcourcy/lvmo-csi/internal/backend"
 	"github.com/michaelcourcy/lvmo-csi/internal/rpcutil"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
 	hp "google.golang.org/grpc/health/grpc_health_v1"
 	"log"
@@ -27,7 +29,21 @@ func main() {
 	nfsInsecure := flag.Bool("nfs-insecure", false, "allow NFS clients to connect from unprivileged source ports")
 	queueDepth := flag.Int("iscsi-queue-depth", 8, "commands in flight per iSCSI volume, on the target and the nodes; bounds latency when a disk is overloaded (0 keeps the defaults)")
 	commandTimeout := flag.Duration("iscsi-command-timeout", 120*time.Second, "SCSI command timeout nodes set on lvmo iSCSI disks (0 keeps the node default)")
+	var api apitls.Files
+	flag.StringVar(&api.Cert, "tls-cert", "", "PEM server certificate for the API; with --tls-key and --tls-client-ca, only clients with a certificate signed by that CA are served")
+	flag.StringVar(&api.Key, "tls-key", "", "PEM key of --tls-cert")
+	flag.StringVar(&api.CA, "tls-client-ca", "", "PEM CA bundle that signs driver client certificates")
 	flag.Parse()
+	options := []grpc.ServerOption{grpc.UnaryInterceptor(rpcutil.Unary), grpc.StreamInterceptor(rpcutil.Stream)}
+	if api.Enabled() {
+		config, err := apitls.Server(api)
+		if err != nil {
+			log.Fatal(err)
+		}
+		options = append(options, grpc.Creds(credentials.NewTLS(config)))
+	} else {
+		log.Print("WARNING: the API has no TLS: anyone who can reach its port can read and delete volumes; set --tls-cert, --tls-key and --tls-client-ca")
+	}
 	if *server == "" {
 		// UDP connect selects a local route without sending a packet.
 		conn, err := net.Dial("udp4", "192.0.2.1:9")
@@ -61,7 +77,7 @@ func main() {
 	if e != nil {
 		log.Fatal(e)
 	}
-	s := grpc.NewServer(grpc.UnaryInterceptor(rpcutil.Unary), grpc.StreamInterceptor(rpcutil.Stream))
+	s := grpc.NewServer(options...)
 	pb.RegisterStorageServer(s, b)
 	h := health.NewServer()
 	h.SetServingStatus("", hp.HealthCheckResponse_SERVING)
@@ -69,7 +85,7 @@ func main() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
 	go func() { <-signals; rpcutil.Stop(s) }()
-	log.Printf("lvmo API listening on %s", l.Addr())
+	log.Printf("lvmo API listening on %s (mutual TLS: %t)", l.Addr(), api.Enabled())
 	if e = s.Serve(l); e != nil {
 		log.Fatal(e)
 	}

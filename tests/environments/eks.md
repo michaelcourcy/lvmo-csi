@@ -201,10 +201,39 @@ The sources live in `/opt/lvmo-src` (not `/tmp`, which is emptied at reboot), so
 ```sh
 context=$(kubectl config current-context)
 kubectl create namespace lvmo-system
-helm upgrade --install lvmo charts/lvmo-csi -n lvmo-system --set snapshotClass.enabled=false \
+helm upgrade --install lvmo charts/lvmo-csi -n lvmo-system --set snapshotClass.enabled=false --set apiTLS.enabled=false \
  --set image.repository=michaelcourcy/lvmo-csi --set-string image.tag=$version --wait --timeout 5m
 KUBE_CONTEXT=$context API_ENDPOINT=$private:50051 bash scripts/install-storageclasses.sh
 ```
+
+`setup-vm.sh` starts the API without TLS, so the driver is installed with `apiTLS.enabled=false`. Scenarios that check mutual TLS need cert-manager, and the next section for a standalone server.
+
+### Optional: cert-manager and mutual TLS (`api-mtls`, `api-mtls-standalone`)
+
+```sh
+helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager --version v1.21.2 \
+ --namespace cert-manager --create-namespace --set crds.enabled=true --wait
+```
+
+With cert-manager, the driver chart's defaults (`apiTLS.enabled=true`) create the ClusterIssuer `lvmo-csi-api`, and the pod storage server chart needs nothing else. For the EC2 storage server, the API binary must come from a commit that has the `--tls-*` options (see **Deploy a code change**). Enable TLS on the driver first, which creates the ClusterIssuer (the driver cannot reach the server until the end of this section). Then issue the server's certificate, and pass it through a private bucket, created as in step 3 (which deleted its own), rather than Run Command parameters, which SSM keeps in its command history:
+
+```sh
+helm upgrade lvmo charts/lvmo-csi -n lvmo-system --reset-then-reuse-values --set apiTLS.enabled=true --wait
+bash scripts/issue-api-server-cert.sh lvmo-test-storage /tmp/lvmo-eks/tls $private
+tar -czf /tmp/lvmo-eks/tls.tgz -C /tmp/lvmo-eks/tls . && rm -r /tmp/lvmo-eks/tls
+aws s3 cp /tmp/lvmo-eks/tls.tgz s3://$bucket/tls.tgz && rm /tmp/lvmo-eks/tls.tgz
+url=$(aws s3 presign s3://$bucket/tls.tgz --expires-in 600)
+params=$(jq -n --arg url "$url" '{commands:[
+ "set -e", "install -d -m 0700 /etc/lvmo/tls",
+ "curl -fsSL \"" + $url + "\" | tar -xz --no-same-owner -C /etc/lvmo/tls", "chmod 0600 /etc/lvmo/tls/*",
+ "grep -q -- --tls-cert /etc/systemd/system/lvmo-api.service || sed -i \"s|^ExecStart=/usr/local/bin/lvmo-csi |&--tls-cert=/etc/lvmo/tls/tls.crt --tls-key=/etc/lvmo/tls/tls.key --tls-client-ca=/etc/lvmo/tls/ca.crt |\" /etc/systemd/system/lvmo-api.service",
+ "systemctl daemon-reload", "systemctl restart lvmo-api", "sleep 3", "journalctl -u lvmo-api -n 5 --no-pager"]}')
+cmd=$(aws ssm send-command --instance-ids $id --document-name AWS-RunShellScript --parameters "$params" --query Command.CommandId --output text)
+aws ssm wait command-executed --command-id $cmd --instance-id $id
+aws s3 rb s3://$bucket --force
+```
+
+The direct CSI endpoint of `setup-vm.sh` (`lvmo-driver` on the server) has no client certificate, so it stops working: scenarios that use it, such as `csi-sanity`, need the API without TLS. To return to it, remove the three options from the unit, restart `lvmo-api`, and upgrade the driver with `apiTLS.enabled=false`.
 
 The chart comes from the source tree. If `$version` is a release older than the node plugin's iSCSI check (`v0.1.0-alpha.3` and earlier), its image has no `--check-node` and the `node-check` init container fails: add `--set nodeCheck.iscsi=false`, or deploy a development image as in **Deploy a code change**.
 
@@ -323,6 +352,10 @@ Only what the run installed and the storage server. **Never delete the cluster**
 kubectl delete -f tests/storageclasses.yaml --ignore-not-found
 helm uninstall lvmo -n lvmo-system
 kubectl delete namespace lvmo-system --ignore-not-found
+# If the run installed cert-manager: the server CA Secret outlives its Certificate.
+kubectl -n cert-manager delete secret lvmo-csi-api-server-ca --ignore-not-found
+helm uninstall cert-manager -n cert-manager && kubectl delete namespace cert-manager
+kubectl get crd -o name | grep cert-manager.io | xargs -r kubectl delete
 aws ec2 terminate-instances --instance-ids $id && aws ec2 wait instance-terminated --instance-ids $id
 aws ec2 delete-security-group --group-id $sg
 aws iam remove-role-from-instance-profile --instance-profile-name lvmo-test-storage --role-name lvmo-test-storage

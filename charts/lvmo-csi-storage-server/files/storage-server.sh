@@ -139,6 +139,8 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 0' TERM INT
-/usr/local/bin/lvmo-csi -P=50051 --root="$root/state" --server="$SERVER" --nfs-clients="$clients" --iscsi-listen-address="$POD_IP" "$vg" 9>&- &
+tls=()
+[[ -z ${TLS_DIR:-} ]] || tls=(--tls-cert="$TLS_DIR/tls.crt" --tls-key="$TLS_DIR/tls.key" --tls-client-ca="$TLS_DIR/ca.crt")
+/usr/local/bin/lvmo-csi -P=50051 "${tls[@]}" --root="$root/state" --server="$SERVER" --nfs-clients="$clients" --iscsi-listen-address="$POD_IP" "$vg" 9>&- &
 api=$!
 wait -n "$api" "$mountd"
