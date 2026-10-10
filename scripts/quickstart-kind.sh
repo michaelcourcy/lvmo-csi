@@ -22,24 +22,25 @@ done
 for manifest in rbac-snapshot-controller.yaml setup-snapshot-controller.yaml; do
   kubectl --context "$context" apply -f "https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/v8.5.0/deploy/kubernetes/snapshot-controller/${manifest}"
 done
-cat >.test/kind/values.yaml <<VALUES
+cat >.test/kind/driver-values.yaml <<VALUES
 image:
   repository: lvmo-local
   tag: driver
 iscsiHostProc: /run/lvmo-host-proc
-create-storage-server:
-  enabled: true
-  source-storage-class: standard
-  size: 5Gi
-  dest-storage-class-prefix: lvmo-test-sc
-  image:
-    repository: lvmo-local
-    tag: server
 VALUES
-helm upgrade --install lvmo charts/lvmo-csi --kube-context "$context" -n lvmo-system --create-namespace -f .test/kind/values.yaml --wait --timeout 5m
+cat >.test/kind/server-values.yaml <<VALUES
+source-storage-class: standard
+size: 5Gi
+dest-storage-class-prefix: lvmo-test-sc
+image:
+  repository: lvmo-local
+  tag: server
+VALUES
+helm upgrade --install lvmo charts/lvmo-csi --kube-context "$context" -n lvmo-system --create-namespace -f .test/kind/driver-values.yaml --wait --timeout 5m
+helm upgrade --install server-a charts/lvmo-csi-storage-server --kube-context "$context" -n lvmo-system -f .test/kind/server-values.yaml --wait --timeout 5m
 # Nested Kind uses the Linux host's iscsid. Give that namespace a route to
 # this single Service through the Kind node, where kube-proxy performs DNAT.
-service_ip=$(kubectl --context "$context" -n lvmo-system get service lvmo-storage -o jsonpath='{.spec.clusterIP}')
+service_ip=$(kubectl --context "$context" -n lvmo-system get service server-a-storage -o jsonpath='{.spec.clusterIP}')
 kind_ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' lvmo-pod-control-plane)
 sudo ip route add "$service_ip/32" via "$kind_ip"
 kubectl --context "$context" get pods -n lvmo-system

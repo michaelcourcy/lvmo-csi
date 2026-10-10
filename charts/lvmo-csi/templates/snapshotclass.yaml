@@ -1,0 +1,18 @@
+{{- if .Values.snapshotClass.enabled }}
+{{- if not (.Capabilities.APIVersions.Has "snapshot.storage.k8s.io/v1/VolumeSnapshotClass") }}
+{{- fail "Snapshot CRDs are missing. Install the snapshot CRDs and controller: https://github.com/kubernetes-csi/external-snapshotter/tree/v8.5.0#usage or use --set snapshotClass.enabled=false to skip VolumeSnapshotClass creation. Snapshot operations still require the CRDs/controller." }}
+{{- end }}
+{{- if not (has .Values.snapshotClass.deletionPolicy (list "Delete" "Retain")) }}
+{{- fail "snapshotClass.deletionPolicy must be Delete or Retain" }}
+{{- end }}
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: {{ required "snapshotClass.name is required" .Values.snapshotClass.name | quote }}
+  {{- if .Values.snapshotClass.kasten }}
+  annotations:
+    k10.kasten.io/is-snapshot-class: "true"
+  {{- end }}
+driver: lvmo.csi.io
+deletionPolicy: {{ .Values.snapshotClass.deletionPolicy }}
+{{- end }}

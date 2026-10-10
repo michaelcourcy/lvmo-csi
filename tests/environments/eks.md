@@ -201,7 +201,7 @@ The sources live in `/opt/lvmo-src` (not `/tmp`, which is emptied at reboot), so
 ```sh
 context=$(kubectl config current-context)
 kubectl create namespace lvmo-system
-helm upgrade --install lvmo charts/lvmo-csi -n lvmo-system \
+helm upgrade --install lvmo charts/lvmo-csi -n lvmo-system --set snapshotClass.enabled=false \
  --set image.repository=michaelcourcy/lvmo-csi --set-string image.tag=$version --wait --timeout 5m
 KUBE_CONTEXT=$context API_ENDPOINT=$private:50051 bash scripts/install-storageclasses.sh
 ```

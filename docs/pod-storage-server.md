@@ -1,53 +1,141 @@
 # Pod-based test storage server
 
-This opt-in feature is for testing. It packages a single
-lvmo storage server in the CSI release namespace, using an existing Filesystem
-PVC as backing storage. It is for functional testing, without replication or
-automatic failover. It does not improve the durability or performance of the
-source storage.
+> **Prerelease:** the two-chart installation below uses `v0.2.0-alpha.1`.
+> Older combined charts still use `create-storage-server`.
 
-The release workflow publishes `michaelcourcy/lvmo-csi-storage-server:<version>`
-for Linux AMD64 and ARM64 alongside `michaelcourcy/lvmo-csi:<version>`, using
-the same `v*` tag. This applies to releases made with the updated workflow;
-older releases do not automatically gain a storage-server image or these defaults.
-The packaged chart defaults to both Docker Hub repositories and uses its
-`appVersion` for both image tags. For release `vX.Y.Z`, the chart version is
-`X.Y.Z` and `appVersion` is `vX.Y.Z` (prerelease suffixes are preserved).
+Install one `lvmo/lvmo-csi` driver release per cluster and independently install
+one or more `lvmo/lvmo-csi-storage-server` releases. The containerized server is
+for functional testing, without replication or automatic failover. It uses an
+existing Filesystem PVC as backing storage and does not improve its durability
+or performance. External Linux storage servers continue to work without the
+storage-server chart.
 
-Install the chart from the project's Helm repository, replacing the source
-StorageClass with one available in your cluster. Without `--version`, Helm
-selects the latest stable release; add `--version` to pin one, or `--devel` to
-include pre-releases:
+Both charts are published in the existing GitHub Pages Helm repository,
+with the same chart version and application version for each release. For tag
+`vX.Y.Z`, both chart versions are `X.Y.Z` and both appVersions are `vX.Y.Z`;
+prerelease suffixes are preserved. Each chart's `image.repository`, `image.tag`
+and `image.pullPolicy` configure its own image. An empty tag uses appVersion.
+The Docker Hub repositories remain `michaelcourcy/lvmo-csi` and
+`michaelcourcy/lvmo-csi-storage-server`.
+
+## Installation and values
+
+Install the snapshot CRDs/controller separately; snapshot-class creation is
+enabled by default. Install the driver first, then a server (replace the source class):
 
 ```sh
 helm repo add lvmo https://michaelcourcy.github.io/lvmo-csi
 helm repo update
-helm upgrade --install lvmo lvmo/lvmo-csi \
+helm upgrade --install lvmo lvmo/lvmo-csi --version 0.2.0-alpha.1 \
+  --namespace lvmo-csi --create-namespace
+helm upgrade --install server-a lvmo/lvmo-csi-storage-server --version 0.2.0-alpha.1 \
   --namespace lvmo-csi --create-namespace \
-  --set create-storage-server.enabled=true \
-  --set create-storage-server.source-storage-class=my-local-storageclass \
-  --set create-storage-server.size=5Gi \
-  --set create-storage-server.dest-storage-class-prefix=lvmo-test-sc
+  --set source-storage-class=my-local-storageclass
 ```
 
-The chart package selects the application version; the Helm release name `lvmo`
-does not. No image overrides, node name, server IP or NFS client IP are required.
-On upgrades, remove old explicit image overrides from your saved values if you
-want to follow the chart's defaults; `--reuse-values` can retain those overrides.
+These are independent releases, with no Helm dependency between the charts.
+There is no server `enabled` switch: installing or uninstalling its release
+controls its lifecycle. The driver no longer accepts `create-storage-server`;
+legacy values should produce a clear error instead of silently doing nothing.
+Migration of existing combined installations is outside this change. Clean up
+old test consumers and snapshots with the old installation before uninstalling
+it and explicitly deleting its retained backing PVC for a fresh installation.
 
-For development, build both Dockerfiles into the environment's permitted
-registry and install from `charts/lvmo-csi`. The source chart uses `appVersion: dev`; explicitly override both images with
-your development builds:
+| Chart | Value | Default / meaning |
+|---|---|---|
+| Driver | `snapshotClass.enabled` | `true`; create the shared class unless explicitly disabled |
+| Driver | `snapshotClass.name` | `lvmo-snapshots` |
+| Driver | `snapshotClass.deletionPolicy` | `Delete`; also accepts `Retain` |
+| Driver | `snapshotClass.kasten` | `true`; add `k10.kasten.io/is-snapshot-class: "true"`; set false to omit |
+| Server | `source-storage-class` | Required existing non-lvmo Filesystem class |
+| Server | `size` | `50Gi` |
+| Server | `dest-storage-class-prefix` | Empty means the server release name; explicit override allowed |
+| Server | `resources` | `{}`; no chart-supplied CPU/memory requests or limits |
+
+When creation is enabled, install/upgrade must check that the
+`snapshot.storage.k8s.io/v1` VolumeSnapshotClass API is available. If it is
+missing, fail before applying chart resources with an actionable message:
+
+> Snapshot CRDs are missing. Install the snapshot CRDs and controller following
+> https://github.com/kubernetes-csi/external-snapshotter/tree/v8.5.0#usage
+> or install lvmo with `--set snapshotClass.enabled=false` to skip creating the
+> VolumeSnapshotClass. Snapshot operations still require the CRDs/controller.
+
+The [upstream installation instructions](https://github.com/kubernetes-csi/external-snapshotter/tree/v8.5.0#usage)
+cover both components. A registered API does not prove that the controller is
+running; controller readiness remains a prerequisite for snapshot operations.
+Offline `helm template` checks that expect snapshot output must advertise
+`--api-versions snapshot.storage.k8s.io/v1/VolumeSnapshotClass`; without that
+capability, default rendering must show the same explicit error. Rendering
+with `--set snapshotClass.enabled=false` must work without that capability.
+
+Server resource requests and limits are optional and independently configurable
+through standard Kubernetes `resources` values. For example:
+
+```yaml
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+```
+
+With the default `{}`, the chart sets neither requests nor limits on the server
+container. Namespace LimitRanges or admission policies may still add defaults
+or require explicit values. Resource configuration does not change the backing
+PVC's capacity. The 5Gi sizes in test scenarios are explicit test overrides;
+the chart default is 50Gi.
+
+Only the driver chart creates the optional shared VolumeSnapshotClass. It is
+cluster-scoped, selects `lvmo.csi.io`, and contains no server endpoint or VG.
+The source volume handle routes snapshot creation to its backend. One class
+works for all servers and both protocols; restore targets must still use the
+source backend. Cross-server LVM cloning is not supported. Additional classes
+are useful for different policies, such as `Retain`, not for different servers.
+Use an existing class with `snapshotClass.enabled=false` when it is managed
+elsewhere. Configure at most one Kasten-preferred class for `lvmo.csi.io`.
+No Kubernetes default-snapshot-class annotation is implied by the Kasten option.
+
+The driver retains its current driver, sidecar, OpenShift and metadata values.
+Server settings move out of `create-storage-server` to the server chart root.
+Use Kubernetes quantities: `5G` is decimal and `5Gi` binary; `5GB` is invalid.
+The effective destination prefix must be a valid DNS label of at most 55
+characters; invalid values fail rather than being silently truncated.
+
+## Namespace layouts and multiple servers
+
+The server may share the driver namespace, use another namespace, or share a
+separate namespace with other servers. For example, after installing the driver
+in `lvmo-csi`, install two servers in `lvmo-storage`:
 
 ```sh
---set image.repository="$TEST_REGISTRY/lvmo-csi" \
---set image.tag="$TEST_DRIVER_TAG" \
---set create-storage-server.image.repository="$TEST_REGISTRY/lvmo-csi" \
---set create-storage-server.image.tag="$TEST_SERVER_TAG"
+for server in server-a server-b; do
+  helm upgrade --install "$server" lvmo/lvmo-csi-storage-server --version 0.2.0-alpha.1 \
+    --namespace lvmo-storage --create-namespace \
+    --set source-storage-class=my-local-storageclass
+done
 ```
 
-Use Kubernetes quantities: `5G` means decimal gigabytes and `5Gi` means binary
-gibibytes; `5GB` is not a valid PVC quantity. The option defaults to disabled.
+This creates classes `server-a-nfs`, `server-a-iscsi`, `server-b-nfs` and
+`server-b-iscsi`. Endpoints are `server-a-storage.lvmo-storage.svc:50051` and
+`server-b-storage.lvmo-storage.svc:50051`. Each release owns its server, Service
+and backing PVC named `<release>-storage`, and a VG derived from namespace and
+release name. StorageClass names are cluster-wide: reuse of a release name in
+another namespace requires a distinct `dest-storage-class-prefix`. Collisions
+must fail without adopting another release's resources.
+
+Network policy and routing must permit management access from the driver and
+NFS/iSCSI access from client nodes. Namespace placement does not provide storage
+isolation or relax the host privileges and kernel prerequisites below.
+
+For development, use `charts/lvmo-csi` and
+`charts/lvmo-csi-storage-server`, overriding each chart's own `image.repository`
+and `image.tag` with builds in the environment's permitted registry. For
+released charts, pin the same `--version` for both initially; independent Helm
+upgrades do not imply compatibility between arbitrary application versions.
+Without a version Helm selects stable releases; use `--devel` for prereleases.
 
 ## Resources and data path
 
@@ -67,16 +155,17 @@ gibibytes; `5GB` is not a valid PVC quantity. The option defaults to disabled.
   (iSCSI). Generated StorageClasses use `<release>-storage.<namespace>.svc:50051`.
   The server resolves that Service to its ClusterIP for NFS/iSCSI volume metadata;
   client nodes must be able to reach the Service network.
-- Cluster-scoped StorageClasses `lvmo-test-sc-iscsi` and `lvmo-test-sc-nfs`, both
+- Cluster-scoped StorageClasses `<prefix>-iscsi` and `<prefix>-nfs`, both
   using `lvmo.csi.io`, the same API endpoint/VG, and their respective protocols.
   They are not default classes. Name collisions must fail rather than adopting
-  an unrelated class.
-- Cluster-scoped VolumeSnapshotClass `lvmo-test-sc-snapshots` for `lvmo.csi.io`,
-  with `deletionPolicy: Delete` and the annotation
-  `k10.kasten.io/is-snapshot-class: "true"`, so Kasten uses it for the generated
-  classes. The VolumeSnapshot CRDs must be installed before the chart: without
-  them the install fails. Do not annotate another `lvmo.csi.io` snapshot class
-  for Kasten in the same cluster.
+  an unrelated class. The iSCSI class carries the annotation
+  `k10.kasten.io/sc-supports-block-mode-exports: "true"`, so Kasten can export
+  its volumes in block mode; a Filesystem PVC still opts in with
+  `k10.kasten.io/pvc-export-volume-in-block-mode`. The NFS class does not: in
+  Kasten 9.0.7, a block export cannot be restored to NFS
+  ([scenario](../tests/scenarios/kasten-block-mode-export.md)).
+- No VolumeSnapshotClass or CSI driver resources in the server release. The
+  shared class belongs to the driver release or is managed externally.
 
 The source PVC supplies bytes; lvmo supplies thin snapshots and the NFS/iSCSI
 interfaces. Applications use the generated classes normally. Client nodes still
@@ -144,39 +233,79 @@ unmount owned volumes, deactivate the owned VG and detach its loop device.
 Restart also needs reconciliation of resources left by an abrupt termination.
 Deleting a Pod does not by itself clean up host kernel objects.
 
-Helm removal is guarded. A pre-upgrade hook is rendered when an existing server
-is found, even when the new values disable it; a conditional hook inside the enabled
-block would disappear precisely when it is needed. A pre-delete hook performs
-the same check before uninstall. Inspection Jobs use required Pod affinity to run
-on the server's node and mount its RWO backing PVC read-only. If no server can
-be reached or the Job cannot be scheduled, removal fails closed. Refuse removal
-if volumes, snapshots or pending backend reclamation remain, or if the existing server cannot be inspected. Keep
-the server and CSI driver running after a refusal so consumers can be cleaned up.
-A failed pre-delete hook can leave Helm's release status as `uninstalling` even
-though serving resources remain. Clean up consumers, then retry uninstall; do
-not promise that an ordinary upgrade is available in that intermediate state.
-Hooks are protection for normal Helm commands, not protection against deliberate
-bypass with `--no-hooks` or direct Kubernetes deletion.
+Server Helm uninstall is guarded by a pre-delete inspection Job. It uses
+required Pod affinity to run on the server's node and mounts its RWO backing
+PVC read-only. Refuse uninstall if volumes, snapshots or pending reclamation
+remain, or if inspection fails. Keep the server running after refusal so
+consumers can be cleaned up. A failed pre-delete hook can leave the release
+`uninstalling`; clean up consumers, then retry uninstall. Hooks do not protect
+against `--no-hooks` or direct Kubernetes deletion.
 
-Omitting the option is not an explicit disable: Helm value reuse/reset flags
-control the resulting value. Use a saved values file for repeatable upgrades.
-Stop creating new consumer PVCs/snapshots during removal; hooks do not serialize
-concurrent provisioning by other Kubernetes clients. Test `--reuse-values` omission (server remains enabled) and `--reset-values`
-omission (default false, guarded removal), as well as explicit `enabled=false`.
-An unchanged enabled upgrade must preserve storage even while consumers exist.
+There is no disable/reset-to-disabled lifecycle in the separate server chart.
+Upgrades with explicit saved values or `--reuse-values` must preserve backend
+identity and data. Reject changes to source class, size, prefix or address
+instead of silently reinitializing storage. Driver upgrades must not change
+server resources; server upgrades must not change driver resources or the
+shared snapshot class. Retaining a PVC alone does not guarantee reinstall
+with a newly allocated Service IP can reuse existing backend state.
 
-Retain the source PVC on Helm uninstall or disable by default. Do not retain the
-privileged server workload with Helm's keep annotation. Delete consumer PVCs and
-snapshots first, verify backend cleanup, then uninstall and explicitly remove
-the retained source PVC when its data is no longer needed. Keeping the PVC does
-not make changing source class, VG identity, Service identity or size a supported
-upgrade; reject unsupported changes instead of silently reinitializing data.
+Stop new consumer creation during cleanup. Delete consumers and snapshots while
+both driver and servers are running, wait for backend reclamation, and uninstall
+each server. Its classes, Service and workload are removed; its source PVC is
+retained for explicit deletion. Other servers and the shared snapshot class
+remain. Uninstall the driver last, and only if it is owned by this run and no
+other backend needs it. Independent releases do not prevent an operator from
+uninstalling the driver prematurely. A driver-owned snapshot class is removed
+with its release; existing snapshot cleanup must therefore be completed first.
+
+## Removal policy
+
+Server uninstall requires successful backend verification: the guard checks TCP
+reachability and the persisted `/backing/state/state.json` volume, snapshot and
+pending-deletion records. It refuses removal while any of those records remain
+or inspection fails. It does not execute `lvs` or query Kubernetes PVC/PV objects.
+The source PVC remains retained for explicit deletion after successful uninstall.
+
+Deleting PVCs, PVs, VolumeSnapshots or VolumeSnapshotContents, particularly by
+removing finalizers, does not prove backend reclamation. Retain policies can
+also deliberately leave backend data. The absence of Kubernetes objects is
+therefore insufficient to permit server uninstall; orphaned backend records
+still block removal. See
+[Kubernetes finalizer semantics](https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers/).
+
+A Kubernetes inventory may be added later to improve diagnostics, but cannot
+replace backend verification. Such an inventory would need to include retained
+PVs and VolumeSnapshotContents, resolve each object's backend rather than rely
+only on class names, and exclude the server's source PVC/PV.
+
+Driver uninstall remains independent of storage-server releases. It removes
+the driver-owned snapshot class with the driver release, without checking how
+many server releases exist. Externally managed snapshot classes are unaffected.
+Counting Helm server releases would miss externally managed storage servers,
+and retaining the class alone would not preserve snapshot operations.
+
+Already mounted NFS/iSCSI volumes may continue serving data from the storage
+server after driver removal, but new mounts, provisioning, expansion, snapshot
+operations and CSI cleanup require the driver. Complete consumer and snapshot
+cleanup while the driver is running, and uninstall it last when no backend
+needs it. Continued I/O on existing mounts is not a guarantee of normal workload
+operation after driver removal.
 
 ## Acceptance
 
-Validation follows [pod-storage-server](../tests/scenarios/pod-storage-server.md)
+Namespace layouts, independent releases and shared snapshots are specified in
+[independent-helm-charts](../tests/scenarios/independent-helm-charts.md).
+Server lifecycle validation follows [pod-storage-server](../tests/scenarios/pod-storage-server.md)
 and the separate [Kind quickstart](quickstart-kind.md). Chart rendering alone cannot
 validate kernel service startup, cross-node access or restart cleanup.
+
+Both independent-chart and server-lifecycle scenarios passed on a fully
+recreated EKS cluster with EBS gp3 backing on 10 October 2026. The run covered
+same/different namespaces, three servers sharing one snapshot class, both
+protocols and snapshot restores, independent upgrades/removal, server
+replacement and guarded uninstall. Mounted clients recovered in 1.4 seconds
+for iSCSI and 89 seconds for NFS. This does not validate the Kind quickstart or
+public chart publication.
 
 ## Container NFS setup
 
@@ -201,7 +330,7 @@ The nested Kind iSCSI helper accesses the host device and its sysfs timeout
 through the host process root. It must preserve the kernel's `/proc/.../root`
 magic-link semantics rather than resolve that path against the container root.
 
-The Pod-network/Service implementation passed the updated scenario on EKS with
+The previous combined-chart Pod-network/Service implementation passed the updated scenario on EKS with
 EBS gp3 on 9 October 2026: cross-node NFS/iSCSI, both snapshot restores, changed
 Pod IPs behind an unchanged Service, and the full upgrade/disable/uninstall
 sequence. Existing mounted consumers recovered after replacement in 3 seconds

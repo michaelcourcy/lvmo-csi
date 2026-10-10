@@ -1,11 +1,10 @@
-{{- $v := index .Values "create-storage-server" -}}
+{{- $v := .Values -}}
 {{- $name := printf "%s-storage" .Release.Name -}}
 {{- $old := lookup "apps/v1" "Deployment" .Release.Namespace $name -}}
 {{- $address := printf "%s.%s.svc" $name .Release.Namespace -}}
-{{- $prefix := index $v "dest-storage-class-prefix" -}}
+{{- $prefix := index $v "dest-storage-class-prefix" | default .Release.Name -}}
 {{- $image := printf "%s:%s" $v.image.repository ($v.image.tag | default .Chart.AppVersion) -}}
 {{- $vg := printf "lvmo-%s" (sha256sum (printf "%s/%s" .Release.Namespace .Release.Name) | trunc 12) -}}
-{{- if $v.enabled }}
 {{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $prefix) }}{{ fail "invalid destination StorageClass prefix" }}{{ end }}
 {{- if gt (len $prefix) 55 }}{{ fail "destination prefix too long" }}{{ end }}
 {{- if not (regexMatch "^[1-9][0-9]*(Gi|G|Mi|M)$" $v.size) }}{{ fail "size must be a positive Kubernetes quantity, e.g. 5Gi" }}{{ end }}
@@ -100,10 +99,10 @@ spec:
           tcpSocket:
             port: 50051
           periodSeconds: 3
+        {{- with $v.resources }}
         resources:
-          requests:
-            cpu: 100m
-            memory: 256Mi
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         volumeMounts:
         - name: backing
           mountPath: /backing
@@ -133,6 +132,12 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: {{ $prefix }}-{{ $protocol }}
+  {{- if eq $protocol "iscsi" }}
+  # Kasten block-mode export is validated for iSCSI only; NFS cannot be
+  # restored from a block export.
+  annotations:
+    k10.kasten.io/sc-supports-block-mode-exports: "true"
+  {{- end }}
 provisioner: lvmo.csi.io
 parameters:
   endpoint: {{ printf "%s:50051" $address | quote }}
@@ -144,30 +149,12 @@ allowVolumeExpansion: true
 volumeBindingMode: Immediate
 {{- end }}
 ---
-apiVersion: snapshot.storage.k8s.io/v1
-kind: VolumeSnapshotClass
-metadata:
-  name: {{ $prefix }}-snapshots
-  annotations:
-    k10.kasten.io/is-snapshot-class: "true"
-driver: lvmo.csi.io
-deletionPolicy: Delete
-{{- end }}
-{{/* Old deployment lookup keeps the upgrade guard when new values disable it. */}}
-{{- if or $v.enabled $old }}
-{{- if $old }}
-{{- $address = index $old.metadata.annotations "lvmo.csi.io/address" }}
-{{- $image = (index $old.spec.template.spec.containers 0).image }}
-{{- end }}
-{{- range $phase := list "pre-upgrade" "pre-delete" }}
-{{- if or $v.enabled (eq $phase "pre-upgrade") }}
----
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ $name }}-{{ $phase }}
+  name: {{ $name }}-pre-delete
   annotations:
-    helm.sh/hook: {{ $phase }}
+    helm.sh/hook: pre-delete
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 spec:
   backoffLimit: 0
@@ -176,7 +163,6 @@ spec:
     spec:
       restartPolicy: Never
       automountServiceAccountToken: false
-      {{- if not (and (eq $phase "pre-upgrade") $v.enabled) }}
       affinity:
         podAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -184,21 +170,16 @@ spec:
               matchLabels:
                 app: {{ $name }}
             topologyKey: kubernetes.io/hostname
-      {{- end }}
       containers:
       - name: guard
         image: {{ $image | quote }}
-        {{- if and (eq $phase "pre-upgrade") $v.enabled }}
-        command: [bash, -c, "echo Enabled upgrade retains backing storage"]
-        {{- else }}
+        imagePullPolicy: {{ $v.image.pullPolicy }}
         args: [guard]
-        {{- end }}
         env:
         - name: VG
           value: {{ $vg }}
         - name: SERVER
           value: {{ $address | quote }}
-        {{- if not (and (eq $phase "pre-upgrade") $v.enabled) }}
         volumeMounts:
         - name: backing
           mountPath: /backing
@@ -207,7 +188,3 @@ spec:
       - name: backing
         persistentVolumeClaim:
           claimName: {{ $name }}
-        {{- end }}
-{{- end }}
-{{- end }}
-{{- end }}

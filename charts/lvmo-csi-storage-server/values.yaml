@@ -1,0 +1,12 @@
+# Privileged, single-replica test server. Never use for production data.
+source-storage-class: ""
+size: 50Gi
+# Empty uses the Helm release name. Must be unique across the cluster.
+dest-storage-class-prefix: ""
+image:
+  repository: michaelcourcy/lvmo-csi-storage-server
+  # Empty uses Chart.appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+# Optional standard Kubernetes requests/limits for the server container.
+resources: {}

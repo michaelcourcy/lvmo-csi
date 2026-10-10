@@ -1,6 +1,6 @@
 # Validation
 
-Baseline validation performed on 27 September 2026; Kasten block-export results added from 6–7 October 2026 and Pod-network storage-server results from 9 October 2026. This is an evaluation implementation, not a production certification.
+Baseline validation performed on 27 September 2026; Kasten block-export results added from 6–7 October 2026 and Pod-network storage-server results from 9 October 2026. Independent Helm charts and server lifecycle were validated on a recreated EKS cluster on 10 October 2026. This is an evaluation implementation, not a production certification.
 
 | Check | Environment | Result |
 | --- | --- | --- |
@@ -22,6 +22,8 @@ Baseline validation performed on 27 September 2026; Kasten block-export results 
 | Physical cleanup | Azure after upstream external suite | No managed volumes, snapshots, node leases, tagged LVs, or project iSCSI resources remained |
 | Per-StorageClass backend routing | Kind; two API processes and independent LVM pools on one Lima VM | Driver restart discovery, capacity, snapshot metadata, cross-backend clone rejection, second-backend NFS-to-iSCSI backup, isolation and physical cleanup passed |
 | PVC-backed Pod-network storage server | EKS 1.35.8 / Ubuntu 24.04 AMD64, EBS gp3 | Cross-node NFS/iSCSI, snapshot restores, changed Pod IPs behind a stable Service, mounted-client recovery, lifecycle guards and cleanup passed |
+| Independent driver/server Helm charts | Recreated EKS 1.35 / Ubuntu 24.04 AMD64, EBS gp3 | Three servers across two namespaces, six NFS/iSCSI snapshot restores through one shared class, independent upgrades/removal and collision rejection passed |
+| Separate server-chart lifecycle | Same recreated EKS cluster | Graceful replacements, mounted-client recovery, immutable-setting rejection, nonempty/uninspectable uninstall guards, retained backing PVC and cleanup passed |
 | Release builds | Linux AMD64 and ARM64 | Executables and multiarchitecture OCI image archive built locally |
 
 The external suite excludes disruptive, serial, slow, performance and stress tests. The local run reported 7,626 skipped specs; the OpenShift run reported 6,863. These include unrelated Kubernetes tests and unsupported driver capabilities; they are not passes. External-suite coverage above is for NFS. Both protocols have separate sanity and snapshot coverage.
@@ -44,6 +46,28 @@ This was not a full pass of the original NFS round-trip scenario. The NFS-source
 The [Pod storage-server scenario](../tests/scenarios/pod-storage-server.md) passed all nine steps on `eks-paris` on 9 October 2026, using commit `eb862f4` plus the Pod-network/Service changes. A startup-order bug was fixed by starting D-Bus before targetcli, followed by a clean rerun. Both protocols preserved 16MiB file hashes through snapshots and graceful server replacement. The Service IP stayed fixed while Pod IPs changed; existing mounted consumers recovered and accepted new writes within 3 seconds for iSCSI and 92 seconds for NFS after API readiness. Unchanged upgrades, nonempty/unreachable removal guards, and empty disable/re-enable with the same VG UUID passed. Cleanup removed test volumes, kernel storage objects and temporary cloud resources while retaining the original cluster and workers. Evidence: `.test/reports/2026-10-09-eks-paris-pod-storage-server.md` (not committed).
 
 This EKS result does not validate the revised Kind host-route path, NFS lock/delegation reclaim, or abrupt node loss. NFS client recovery tracking was unavailable in the tested container; the observed recovery covers file I/O after graceful replacement.
+
+The [independent Helm charts](../tests/scenarios/independent-helm-charts.md) and
+[Pod storage-server](../tests/scenarios/pod-storage-server.md) scenarios passed
+on 10 October 2026 using commit `c2e9d70` plus the chart-split changes. The old
+EKS cluster and VPC were deleted and recreated before testing. One server ran
+in the driver namespace and two in a separate namespace; two servers shared a
+worker. All six snapshot restores matched their source hashes through one
+shared VolumeSnapshotClass. Independent upgrades and server removal preserved
+the other releases; a colliding StorageClass prefix was rejected.
+
+The lifecycle run preserved the VG UUID and Service IP through changed Pod
+IPs. Mounted clients recovered and verified fresh writes in 1.4 seconds for
+iSCSI and 89 seconds for NFS. Both nonempty and unschedulable-inspection
+uninstall guards refused removal; empty uninstall retained the backing PVC
+for explicit deletion. Cleanup removed all test resources and temporary ECR,
+with host loop inventories matching baseline and no owned device-mapper or
+iSCSI resources remaining. The rebuilt cluster and three Ready workers were
+retained. Local Go race tests, vet, both-chart rendering/packaging checks and
+release binary builds also passed. Kind runtime and public release publication
+were not part of this EKS run. Reports (not committed):
+`.test/reports/2026-10-10-eks-paris-independent-helm-charts.md` and
+`.test/reports/2026-10-10-eks-paris-pod-storage-server.md`.
 
 Kasten `preferred` fallback and consumption of KEP-3314 remain unvalidated. Passing the independent metadata client does not establish Kasten interoperability. Production load, thin-pool exhaustion recovery, abrupt server failure/fencing, and long-running durability testing remain outside this initial validation.
 

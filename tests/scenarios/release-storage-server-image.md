@@ -8,6 +8,9 @@ automation: none
 
 # Release matching driver and storage-server images
 
+> Two-chart release revision; local packaging checks do not establish that
+> a release has published the images and charts.
+
 ## Purpose
 
 Verify that a versioned release publishes the separate storage-server image for
@@ -34,20 +37,27 @@ both supported architectures alongside the driver image.
    `docker buildx imagetools inspect michaelcourcy/lvmo-csi:$VERSION` and
    `docker buildx imagetools inspect michaelcourcy/lvmo-csi-storage-server:$VERSION`.
    Record each digest and verify Linux AMD64 and ARM64 manifests in both images.
-4. Download `lvmo-csi-${VERSION#v}.tgz` from that GitHub release into a temporary
-   directory. Run `helm show chart <package>`: `version` must be the release tag
-   without its leading `v`, and `appVersion` must be the complete tag.
-5. Run `helm template release-check <package>
-   --set create-storage-server.enabled=true
-   --set create-storage-server.source-storage-class=external` as one command,
-   without image overrides. Verify both repositories use the published tag;
-   check the driver controller, node plugin, node-check init container, server
-   and both removal hooks.
-6. Render again with `--set image.repository=example.test/driver
-   --set image.tag=driver-test
-   --set create-storage-server.image.repository=example.test/server
-   --set create-storage-server.image.tag=server-test`. Verify all corresponding
-   containers use the explicit values. Run `bash scripts/test-release-chart.sh`
+4. Download both `lvmo-csi-${VERSION#v}.tgz` and
+   `lvmo-csi-storage-server-${VERSION#v}.tgz` from that GitHub release into a
+   temporary directory. Inspect both with `helm show chart`: chart names must
+   differ, versions must equal the tag without `v`, and appVersions the full tag.
+   Run `helm repo add lvmo https://michaelcourcy.github.io/lvmo-csi` and
+   `helm repo update`; verify `helm search repo lvmo --versions --devel` lists
+   both chart names at the selected version. Download each with `helm pull
+   lvmo/<chart-name> --version "${VERSION#v}" --destination <temporary-directory>`
+   and compare its checksum with the matching GitHub release download.
+5. Render the driver package using `helm template release-check <driver-package>
+   --api-versions snapshot.storage.k8s.io/v1/VolumeSnapshotClass`.
+   Render the server package using `helm template server-check <server-package>
+   --set source-storage-class=external`. Without image overrides, the driver
+   controller, node plugin and node-check use the driver repository at the tag;
+   the server and every server hook use the server repository at the same tag.
+   Driver output must contain no storage-server workload; server output must
+   contain no CSI driver resources or VolumeSnapshotClass.
+6. Keep the advertised snapshot API on driver renders. Render each package again with its own `image.repository` and `image.tag`:
+   `example.test/driver:driver-test` for the driver and
+   `example.test/server:server-test` for the server. Check every corresponding
+   container, including hooks. Run the updated `bash scripts/test-release-chart.sh`
    for local stable/prerelease/development packaging and rendering checks.
 
 ## Expected
@@ -56,7 +66,10 @@ both supported architectures alongside the driver image.
 - The server publication step uses `Dockerfile.storage-server`; the driver
   publication step continues to use the default `Dockerfile`.
 - GitHub release creation only runs after both publication steps succeed.
-- Packaged chart version and appVersion match the release tag as described above.
+- Both chart packages are attached to the release and discoverable/downloadable
+  from the existing GitHub Pages Helm repository, including prereleases.
+- Both packaged chart versions and appVersions match the release tag.
+- Rendered resources respect the independent chart ownership boundary.
 - Without overrides, rendered resources select matching published image versions.
 - Explicit repository/tag overrides work independently for the two images.
 
@@ -64,7 +77,8 @@ both supported architectures alongside the driver image.
 
 - Tag, commit, workflow run URL and publication results.
 - Manifest inspection output with digests and platforms for both repositories.
-- Packaged chart metadata, rendered image references and local script output.
+- Both packaged chart metadata, repository index/search output, package
+  checksums, rendered image references and local script output.
 
 ## Cleanup
 

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: lvmo-csi-storage-server
+description: PVC-backed test storage server for the lvmo CSI driver
+version: 0.1.0
+appVersion: "dev"
+type: application

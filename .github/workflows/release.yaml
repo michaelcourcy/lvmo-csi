@@ -46,7 +46,7 @@ jobs:
         GH_TOKEN: ${{ github.token }}
     # The Helm repository is index.yaml on gh-pages, served by GitHub Pages;
     # its entries point to the charts attached to the GitHub releases.
-    - name: Add the chart to the Helm repository index
+    - name: Add both charts to the Helm repository index
       run: |
         git fetch origin gh-pages:refs/remotes/origin/gh-pages
         git worktree add pages origin/gh-pages
@@ -58,5 +58,5 @@ jobs:
         git config user.name github-actions[bot]
         git config user.email 41898282+github-actions[bot]@users.noreply.github.com
         git add index.yaml
-        git commit -m "Add chart for ${GITHUB_REF_NAME}"
+        git commit -m "Add charts for ${GITHUB_REF_NAME}"
         git push origin HEAD:gh-pages

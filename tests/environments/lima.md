@@ -219,6 +219,7 @@ kubectl -n kube-system rollout status deployment/snapshot-controller --timeout=1
 kubectl create namespace lvmo-system
 kubectl label namespace lvmo-system pod-security.kubernetes.io/enforce=privileged
 helm upgrade --install lvmo ./lvmo-csi.tgz -n lvmo-system \
+  --set snapshotClass.enabled=false \
   --set image.repository=michaelcourcy/lvmo-csi \
   --set-string image.tag="$LVMO_VERSION" \
   --set image.pullPolicy=Always \

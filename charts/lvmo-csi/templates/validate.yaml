@@ -1,0 +1,3 @@
+{{- if hasKey .Values "create-storage-server" }}
+{{- fail "create-storage-server is no longer supported; install the lvmo/lvmo-csi-storage-server chart as a separate release" }}
+{{- end }}

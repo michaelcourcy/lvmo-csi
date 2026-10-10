@@ -1,5 +1,10 @@
 # Quickstart: lvmo entirely inside Kind
 
+> **Chart split in the source tree.** Install from `charts/lvmo-csi` and
+> `charts/lvmo-csi-storage-server` until a release publishes both charts.
+> The repository commands below require such a release; older combined charts
+> still use `create-storage-server`.
+
 The previous host-network version was validated on 8 October 2026 in an Ubuntu
 24.04 ARM64 Lima VM. The Pod-network/Service version awaits runtime validation.
 This guide runs
@@ -55,7 +60,9 @@ sudo bash scripts/quickstart-kind.sh
 The script builds a custom [Kind node image](../examples/kind/Dockerfile) with
 NFS/iSCSI userspace tools and creates `lvmo-pod` using the pinned Kubernetes
 1.35.0 image. It builds and loads both local lvmo images, installs the snapshot
-controller, and installs the Helm chart into `lvmo-system`.
+controller, and installs two independent Helm releases into `lvmo-system`:
+`lvmo` for the driver and `server-a` for the storage server. The driver creates
+the shared `lvmo-snapshots` class with Kasten annotation enabled by default.
 
 The [Kind configuration](../examples/kind/cluster.yaml) supplies host kernel
 modules and the host-process reference used by lvmo's existing nested-iSCSI
@@ -63,8 +70,11 @@ helper. It also binds a real host filesystem at the local-path provisioner's
 storage directory. This avoids placing the backing PVC on a container overlay.
 The host iSCSI daemon is shared; this is not an independent-initiator test.
 
-The generated `.test/kind/values.yaml` enables the server, requests a 5Gi source
-PVC on `standard`, and publishes the server through a ClusterIP Service. No node
+The script generates `.test/kind/driver-values.yaml` and
+`.test/kind/server-values.yaml` with separate local image overrides. The server
+values explicitly set `dest-storage-class-prefix=lvmo-test-sc` to preserve the
+example workload class names, request a 5Gi source
+PVC on `standard` (explicitly overriding the 50Gi default), and publish the server through a ClusterIP Service. No node
 name or IP values are required. The local-path PV supplies node affinity. NFS
 exports use `*`; keep this test cluster reachable only by trusted clients. The loop image uses only part of the requested capacity,
 leaving space for filesystem and thin-pool metadata. Local-path storage does not
@@ -124,12 +134,13 @@ Keep the saved values explicit on upgrades:
 
 ```sh
 helm upgrade lvmo charts/lvmo-csi \
-  -n lvmo-system -f .test/kind/values.yaml --wait
+  -n lvmo-system -f .test/kind/driver-values.yaml --wait
+helm upgrade server-a charts/lvmo-csi-storage-server \
+  -n lvmo-system -f .test/kind/server-values.yaml --wait
 ```
 
-An omitted switch does not always mean disabled: Helm's reuse/reset flags
-control the resulting values. Disabling the server or uninstalling with live
-volumes must be refused by the lifecycle guard. Do not bypass the hooks.
+The releases upgrade independently. Server uninstall with live volumes must be
+refused by its lifecycle guard. There is no server enable/disable switch.
 A refused uninstall can leave Helm's status as `uninstalling`; clean up the
 consumers and retry uninstall rather than attempting an ordinary upgrade.
 
@@ -138,11 +149,12 @@ kubectl delete namespace lvmo-demo
 # Wait until consumer PVs and snapshots are reclaimed; only the source PVC remains.
 kubectl get pv
 # Save the Service address before Helm removes it.
-STORAGE_SERVICE_IP=$(kubectl -n lvmo-system get svc lvmo-storage -o jsonpath='{.spec.clusterIP}')
-helm uninstall lvmo -n lvmo-system --wait
+STORAGE_SERVICE_IP=$(kubectl -n lvmo-system get svc server-a-storage -o jsonpath='{.spec.clusterIP}')
+helm uninstall server-a -n lvmo-system --wait
 sudo ip route del "$STORAGE_SERVICE_IP/32"
 # The source PVC is deliberately retained. Delete it explicitly after checking cleanup.
-kubectl -n lvmo-system delete pvc lvmo-storage
+kubectl -n lvmo-system delete pvc server-a-storage
+helm uninstall lvmo -n lvmo-system --wait
 sudo kind delete cluster --name lvmo-pod
 ```
 

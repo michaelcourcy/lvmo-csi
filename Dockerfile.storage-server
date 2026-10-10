@@ -8,6 +8,6 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -o /lvmo-
 FROM ubuntu:24.04
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends lvm2 thin-provisioning-tools nfs-kernel-server targetcli-fb util-linux kmod e2fsprogs xfsprogs jq procps dbus && rm -rf /var/lib/apt/lists/*
 COPY --from=build /lvmo-csi /usr/local/bin/lvmo-csi
-COPY charts/lvmo-csi/files/storage-server.sh /usr/local/bin/storage-server
-COPY --chmod=755 charts/lvmo-csi/files/exportfs /usr/local/sbin/exportfs
+COPY charts/lvmo-csi-storage-server/files/storage-server.sh /usr/local/bin/storage-server
+COPY --chmod=755 charts/lvmo-csi-storage-server/files/exportfs /usr/local/sbin/exportfs
 ENTRYPOINT ["bash", "/usr/local/bin/storage-server"]

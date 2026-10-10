@@ -116,7 +116,8 @@ else
  image_tag=$RELEASE_VERSION
 fi
 export TEST_IMAGE="$image_repository:$image_tag"
-helm upgrade --install lvmo "$root/charts/lvmo-csi" --kube-context "$context" -n lvmo-system --set openshift=true --set image.repository="$image_repository" --set image.tag="$image_tag" --wait --timeout 5m
+# install-storageclasses.sh owns the snapshot class for this test harness.
+helm upgrade --install lvmo "$root/charts/lvmo-csi" --set snapshotClass.enabled=false --kube-context "$context" -n lvmo-system --set openshift=true --set image.repository="$image_repository" --set image.tag="$image_tag" --wait --timeout 5m
 API_ENDPOINT="$private:50051" bash "$root/scripts/install-storageclasses.sh"
 export API_ENDPOINT="$private:50051"
 # Scenarios that need the storage server's direct CSI endpoint run on the VM;

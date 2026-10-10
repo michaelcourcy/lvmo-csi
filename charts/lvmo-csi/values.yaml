@@ -40,14 +40,10 @@ failover:
   enabled: true
   timeout: 120s
 
-# Privileged, single-replica test server. Never use for production data.
-create-storage-server:
-  enabled: false
-  source-storage-class: ""
-  size: 5Gi
-  dest-storage-class-prefix: lvmo-test-sc
-  image:
-    repository: michaelcourcy/lvmo-csi-storage-server
-    # Empty uses Chart.appVersion, independently of the driver override.
-    tag: ""
-    pullPolicy: IfNotPresent
+# Shared by every backend managed by this driver. Install snapshot CRDs first,
+# or explicitly disable class creation when snapshots are managed elsewhere.
+snapshotClass:
+  enabled: true
+  name: lvmo-snapshots
+  deletionPolicy: Delete
+  kasten: true

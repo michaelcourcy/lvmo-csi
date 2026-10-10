@@ -8,6 +8,9 @@ automation: none
 
 # PVC-backed test storage server installed by Helm
 
+> The two-chart revision passed on EKS on 10 October 2026.
+> Earlier observations below apply to the combined chart.
+
 ## Purpose
 
 Validate the [pod storage server](../../docs/pod-storage-server.md):
@@ -25,6 +28,7 @@ stable ClusterIP Service and requiring no node/IP configuration.
 - An existing non-lvmo Filesystem StorageClass can supply a 5Gi RWO source PVC
   on an eligible node. Record its provisioner, reclaim policy and binding mode. A local
   class may use WaitForFirstConsumer; placement must respect PV node affinity.
+- The instance permits temporarily cordoning the server node without eviction.
 - A second node can mount both protocols. Snapshot CRDs/controller are installed.
 - The development server image is available in the environment's permitted
   registry. No Helm release or generated class name collides with this test.
@@ -33,19 +37,29 @@ stable ClusterIP Service and requiring no node/IP configuration.
 
 ## Steps
 
-1. Render/lint with the option disabled: no source PVC, server workload or
-   generated StorageClasses must appear. With the option enabled, reject an
-   empty source class, malformed size, or invalid destination class prefix.
-   Run `bash scripts/test-pod-storage-chart.sh`. Render the enabled chart without
-   `node-name`, `server-address` or `nfs-clients`; it must succeed.
-2. Install release `lvmo-pod-test` into `lvmo-pod-test` with the values
-   in the design, using the selected source class, `size=5Gi` and prefix
-   `lvmo-test-sc`. Wait up to 10 minutes for source binding and API readiness.
+1. Run `bash scripts/test-pod-storage-chart.sh`. Lint/render both charts; successful offline driver rendering must
+   advertise `--api-versions snapshot.storage.k8s.io/v1/VolumeSnapshotClass`,
+   while offline lint can use `--set snapshotClass.enabled=false`. The driver must create no server PVC,
+   server workload or destination StorageClasses. Reject legacy
+   `create-storage-server` values with an actionable error. The server chart
+   must create no driver resources or VolumeSnapshotClass. Reject an empty
+   source class, malformed size, invalid destination prefix and a source class
+   provisioned by lvmo. Render without node/IP/client-selector values.
+2. Install driver release `lvmo-driver-test` in namespace `lvmo-pod-test` from
+   `charts/lvmo-csi`, with `snapshotClass.enabled=true`,
+   `snapshotClass.name=lvmo-pod-test-snapshots` and `snapshotClass.kasten=true`.
+   Use the environment-authorized driver image and allow 5 minutes for readiness.
+   Install server release `lvmo-pod-test` in that namespace from
+   `charts/lvmo-csi-storage-server`, with the selected `source-storage-class`,
+   `size=5Gi`, `dest-storage-class-prefix=lvmo-test-sc` and authorized server image.
+   Wait up to 10 minutes for source binding and API readiness.
    Verify one server replica, a loop device backed by the source PVC file, one
    owned VG/thin pool, and the two generated classes pointing at that backend.
-   Verify VolumeSnapshotClass `lvmo-test-sc-snapshots` exists with driver
+   Verify the driver-owned VolumeSnapshotClass `lvmo-pod-test-snapshots` exists with driver
    `lvmo.csi.io`, `deletionPolicy: Delete` and annotation
-   `k10.kasten.io/is-snapshot-class: "true"`.
+   `k10.kasten.io/is-snapshot-class: "true"`. Verify `lvmo-test-sc-iscsi`
+   carries `k10.kasten.io/sc-supports-block-mode-exports: "true"` and
+   `lvmo-test-sc-nfs` carries no block-mode export annotation.
    Verify `hostNetwork: false`, no hostname selector, a Pod IP distinct from the
    host IP, and a ClusterIP Service exposing TCP 50051, 2049 and 3260. Record its
    IP and EndpointSlice Pod address. Both class endpoints must use
@@ -60,7 +74,7 @@ stable ClusterIP Service and requiring no node/IP configuration.
    node IP. Inspect `targetcli ls` inside the server: its listener must bind the
    Pod IP with no wildcard portal. The driver must not depend on SendTargets
    discovery to create its Service-addressed node records.
-4. Using the generated VolumeSnapshotClass `lvmo-test-sc-snapshots`, create a
+4. Using the shared VolumeSnapshotClass `lvmo-pod-test-snapshots`, create a
    snapshot of each PVC. Wait up to 5 minutes for readyToUse. Restore each into a new 256Mi
    PVC of the same class and verify both hashes from Pods on the second node.
 5. Stop consumer Pods cleanly, keep their PVCs, and delete the server Pod with
@@ -78,35 +92,41 @@ stable ClusterIP Service and requiring no node/IP configuration.
    recover. Use bounded commands (`timeout 300`) to verify the saved hashes and
    write/read a fresh 1Mi file through both mounts. Record reconnection timing;
    do not restart the consumers to make this check pass.
-6. Perform an unchanged Helm upgrade. Verify class endpoints and volume handles
-   remain stable and data is readable. Record rejection of unsupported changes
-   to backing-store identity; do not apply destructive migration workarounds.
-7. While consumer volumes and snapshots exist, attempt an explicit disable,
-   and an upgrade omitting the switch with `--reset-values`.
-   Each must fail before removing server, CSI driver or generated classes.
-   Verify the guard Job is scheduled on the server's node through Pod affinity
-   and consumer data remains readable after each refusal. An upgrade omitting
-   the switch with `--reuse-values` must retain the enabled server and data.
-8. Verify the guard also refuses removal when the server cannot be inspected;
-   restore server availability afterward. A failed inspection must not be
-   interpreted as an empty backend. Use a bounded, reversible interruption of
-   the guard's access rather than force-deleting a server with mounted storage.
-9. Remove all consumers and snapshots and wait for physical reclamation. Disable
-   the option and verify successful server, StorageClass and
-   VolumeSnapshotClass removal while the source PVC
-   is retained and the Service is removed. Re-enable against the retained source and verify readiness with
-   the existing pool and state. Create a fresh 256Mi iSCSI consumer and write a
-   hash-checked file. Attempt uninstall: it must fail while leaving the data
-   readable. Helm can mark the release `uninstalling` after a failed pre-delete
-   hook; do not assume an upgrade can follow that failure. Delete the consumer,
-   wait for backend reclamation, then retry uninstall successfully and verify
-   source-PVC retention again. Finish Cleanup and record all results.
+6. Upgrade the driver with its saved values, then independently upgrade the
+   server with its saved values (5 minutes per upgrade). Record server Pod UID,
+   Service IP, PVC UID and VG UUID before/after the driver upgrade; they must
+   remain unchanged. Record driver Pod UIDs and shared snapshot-class UID
+   before/after the server upgrade; they must remain unchanged. Verify endpoints,
+   handles and hashes remain stable. Attempt server upgrades changing each of
+   source class (to another name), size (to `6Gi`) and prefix (to `changed-test`);
+   each must be rejected without changing backend identity. An unchanged server
+   upgrade with `--reuse-values` must preserve data too.
+7. While consumers and snapshots exist, run
+   `helm uninstall lvmo-pod-test -n lvmo-pod-test --wait --timeout 2m`.
+   It must fail without deleting server resources. Verify the inspection Job
+   runs on the server's node through Pod affinity and data remains readable.
+   The driver and shared snapshot class must remain unchanged. Helm may mark
+   the server release `uninstalling`; do not require an upgrade after refusal.
+8. Verify uninstall also fails when inspection cannot run: cordon the recorded
+   server node without evicting its running Pods, retry the same uninstall with
+   its 2-minute timeout, and record the pending guard Job and scheduling reason.
+   Confirm the existing server and consumers remain running. Restore the node's
+   original schedulability immediately, including after failure; only perform
+   this step where the environment authorizes temporary cordoning. A failed
+   inspection must not be interpreted as an empty backend.
+9. Delete all consumer Pods, PVCs and snapshots. Wait up to 10 minutes for
+   physical reclamation, then retry the server uninstall successfully. Verify
+   its workload, Service and two StorageClasses are gone, its source PVC remains,
+   and the driver and shared snapshot class still exist. Finish Cleanup.
 
 ## Expected
 
-- Opt-in installation creates one server in the CSI namespace, exactly two
-  non-default destination classes, one VolumeSnapshotClass annotated for Kasten
-  and a ClusterIP Service; disabled installation is unchanged. No node name, server address or NFS client selector is required.
+- Two independent releases install one driver and one server in the same
+  namespace. The server owns exactly two non-default StorageClasses (iSCSI
+  alone annotated for Kasten block export), its backing PVC and Service. The
+  driver owns the single shared snapshot class with Kasten annotation.
+- No node name, server address or NFS client selector is required. Invalid
+  server settings and legacy combined-chart values are rejected.
 - The server uses its Pod network and source-PV topology for placement. NFS
   mounts and iSCSI client sessions use the stable Service IP; iSCSI listeners
   bind only the current Pod IP. Pod replacement changes the endpoint without
@@ -118,12 +138,13 @@ stable ClusterIP Service and requiring no node/IP configuration.
 - Restart reuses existing storage and leaves no duplicate owned attachments.
 - The source class is independent of lvmo; its local placement constraints are
   honored. Reported thin-pool capacity is smaller than the backing PVC capacity.
-- Disable/reset-to-disabled and uninstall are refused while the backend is
-  nonempty or cannot be inspected. Refusal leaves serving resources intact.
-  Enabled upgrades, including omission with value reuse, preserve data.
-- After reclamation, disable and uninstall succeed and stop the server. The
-  Service is also removed. The retained source can be reused on re-enable
-  without reinitialization.
+- Server uninstall is refused while the backend is nonempty or inspection
+  fails. Refusal leaves serving resources intact. Independent unchanged
+  upgrades preserve data and do not roll the other component; unsupported
+  backing identity changes are rejected.
+- After reclamation, server uninstall removes its workload, Service and classes
+  without removing the driver or shared snapshot class. No disable/re-enable
+  or migration of a retained backend to a recreated Service is required.
 - Uninstall retains the source PVC for explicit deletion. Cleanup removes only
   test-owned kernel resources; baseline resources are unchanged.
 
@@ -139,15 +160,16 @@ stable ClusterIP Service and requiring no node/IP configuration.
 
 ## Cleanup
 
+- Restore the server node's original schedulability if step 8 was interrupted.
 - After success or failure, collect evidence and delete consumer Pods, snapshots
   and consumer PVCs while the server is running. Wait up to 10 minutes for owned
   volumes, mounts and targets to be reclaimed.
-- Uninstall the test release and verify graceful server shutdown removes owned
+- Uninstall the server test release and verify graceful server shutdown removes owned
   host attachments. Verify the source PVC still exists, then explicitly delete
   it and wait for its source provisioner's reclamation. Do not remove a backing
   file while a loop device still references it.
-- Delete the test namespaces after their resources are gone; uninstall removes
-  the generated VolumeSnapshotClass. Compare host inventory to baseline; record leftovers as failures.
+- Uninstall the run-owned driver last; this removes its shared snapshot class.
+  Delete the test namespaces after their resources are gone. Compare host inventory to baseline; record leftovers as failures.
 - Retain diagnostic evidence and report any blocked cleanup instead of touching
   unrelated host storage.
 
@@ -171,3 +193,13 @@ removal checks passed, including retained-pool reuse. Local report:
 `.test/reports/2026-10-09-eks-paris-pod-storage-server.md` (not committed).
 NFS client recovery tracking was unavailable in the server; this run validates
 file I/O after graceful replacement, not lock/delegation reclaim.
+
+The independent-chart revision passed on a fully recreated `eks-paris` cluster
+on 10 October 2026 with EBS gp3 backing. All nine steps passed, including both
+restore hashes, changed Pod IPs, independent upgrades, both uninstall refusal
+paths and explicit deletion of the retained source PVC. Mounted clients
+recovered in 1.4 seconds (iSCSI) and 89 seconds (NFS), with new writes verified.
+Replacement containers briefly retried while the old backing-store lock was
+held, then became ready within the timeout. Host loop inventories matched the
+baseline after cleanup. Local report:
+`.test/reports/2026-10-10-eks-paris-pod-storage-server.md` (not committed).

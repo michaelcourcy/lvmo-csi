@@ -11,7 +11,7 @@ test:
 	$(GO) test -race ./...
 lint:
 	$(GO) vet ./...
-	helm lint charts/lvmo-csi --set apiEndpoint=127.0.0.1:50051
+	bash scripts/test-pod-storage-chart.sh
 	bash scripts/test-release-chart.sh
 generate:
 	protoc --go_out=. --go_opt=module=github.com/michaelcourcy/lvmo-csi --go-grpc_out=. --go-grpc_opt=module=github.com/michaelcourcy/lvmo-csi api/v1/storage.proto
