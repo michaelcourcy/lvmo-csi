@@ -229,7 +229,7 @@ The API's options:
 | `--tls-client-ca` | none | The driver CA: the CA bundle that signs the driver's client certificate. With the two options above, only clients with such a certificate are served. Without all three, the API has no TLS |
 | `--root` | `/var/lib/lvmo` | The state directory, and where NFS volumes are mounted. Only one API process may use it |
 | `--pool` | `lvmo-pool` | The thin pool's name, the same in every VG |
-| `--nfs-clients` | `*` | The NFS export client selector, for example `10.0.0.0/24` |
+| `--nfs-clients` | empty | Empty: each NFS volume is exported only to the nodes it is attached to ([NFS access](#nfs-access)). A fixed selector for every export, such as `10.0.0.0/24`, restores the previous behaviour |
 | `--nfs-insecure` | off | Allows NFS clients on unprivileged source ports. Needed only behind port forwarding, such as Lima |
 | `--iscsi-queue-depth` | `8` | Commands in flight per iSCSI volume (section 1). `0` keeps the Linux and LIO defaults |
 | `--iscsi-command-timeout` | `2m` | The SCSI command timeout nodes set on lvmo disks |
@@ -238,13 +238,16 @@ A changed iSCSI option applies to a volume the next time it is attached to a nod
 
 ## 6. Tune NFS
 
-Raise the NFS server threads (see section 1):
+Raise the NFS server threads (see section 1), and turn off `manage-gids`, which Ubuntu enables:
 
 ```sh
 sudo nfsconf --set nfsd threads 64
+sudo nfsconf --set mountd manage-gids n
 sudo systemctl restart nfs-server
 cat /proc/fs/nfsd/threads    # 64
 ```
+
+With `manage-gids`, the server replaces the groups a client sends with the groups that user ID has in the server's own `/etc/group`. Pod user IDs and a pod's `fsGroup` exist only on the nodes, so every group permission fails: a pod that is not root cannot write a group-writable file another pod created, even with the right `fsGroup`.
 
 Volumes are mounted on the server, so enable weekly trimming. Files deleted in NFS volumes then give their chunks back to the pool:
 
@@ -254,7 +257,7 @@ sudo systemctl enable --now fstrim.timer
 
 ## 7. Open the network to the nodes only
 
-Nodes use three TCP ports: 50051 (management API), 2049 (NFS 4.1) and 3260 (iSCSI). The management API requires the driver's client certificate (section 5), but the data ports have no authentication: NFS exports use `no_root_squash`, and an iSCSI target admits any initiator name it lists. **Open them to the cluster nodes' network only, never publicly.** With `ufw`, for nodes in `10.0.0.0/24`:
+Nodes use three TCP ports: 50051 (management API), 2049 (NFS 4.1) and 3260 (iSCSI). The management API requires the driver's client certificate (section 5). The data ports are limited per volume to the nodes it is attached to ([NFS access](#nfs-access), and the iSCSI initiators below), but by address or initiator name, without authentication. **Open them to the cluster nodes' network only, never publicly.** With `ufw`, for nodes in `10.0.0.0/24`:
 
 ```sh
 sudo ufw allow OpenSSH
@@ -263,6 +266,18 @@ sudo ufw enable
 ```
 
 iSCSI access is also limited per volume: once a volume is attached, only its node's initiator may log in.
+
+### NFS access
+
+NFS here uses AUTH_SYS: a client declares its user ID and the server believes it. Whoever can mount an export can therefore read and write all of it, with a userspace NFS client that needs no privileges, whatever the `root_squash` setting. So the API controls who can mount:
+
+- Each NFS volume is exported only to the nodes it is attached to, at the address each node's heartbeats come from: its NFS mounts take the same path to the server, through the same NAT if any. A new volume, including a clone or a restored snapshot, is exported to nobody until it is first attached.
+- A ReadWriteMany volume is exported to every node it is attached to. Detaching a node removes its export, and fencing a failed node removes it too, so NFS volumes are fenced like iSCSI ones.
+- Exports keep `no_root_squash`. The driver's `fsGroupPolicy: File` lets the kubelet, which runs as root, change the volume's owner to a pod's `fsGroup`, and many images run as root. With `root_squash` both fail, and the attacker would only have to declare another user ID.
+
+The limit: Pods on an attached node reach the server with the node's address when the Pod network masquerades their traffic, as overlay networks often do towards a server outside the cluster. They are then not told apart from the node. Pods that keep their own address (the pod storage server, or the AWS VPC CNI towards a server in the VPC) are refused.
+
+`--nfs-clients=<selector>` exports every volume to a fixed selector instead, as before: use it only where node addresses do not work, for example behind port forwarding. After an upgrade from an earlier version, a volume that is already attached stays exported to every client until it is next attached to a node.
 
 ## 8. Monitor and protect the pool
 

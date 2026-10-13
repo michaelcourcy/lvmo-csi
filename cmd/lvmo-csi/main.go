@@ -25,7 +25,7 @@ func main() {
 	server := flag.String("server", "", "NFS/iSCSI address reachable from Kubernetes nodes")
 	iscsiListen := flag.String("iscsi-listen-address", "", "local iSCSI portal address; requires targetcli auto_add_default_portal=false")
 	pool := flag.String("pool", "lvmo-pool", "existing thin pool name in every VG")
-	clients := flag.String("nfs-clients", "*", "NFS export client selector")
+	clients := flag.String("nfs-clients", "", "fixed NFS client selector for every export, such as 10.0.0.0/24; empty exports each NFS volume only to the nodes it is attached to")
 	nfsInsecure := flag.Bool("nfs-insecure", false, "allow NFS clients to connect from unprivileged source ports")
 	queueDepth := flag.Int("iscsi-queue-depth", 8, "commands in flight per iSCSI volume, on the target and the nodes; bounds latency when a disk is overloaded (0 keeps the defaults)")
 	commandTimeout := flag.Duration("iscsi-command-timeout", 120*time.Second, "SCSI command timeout nodes set on lvmo iSCSI disks (0 keeps the node default)")

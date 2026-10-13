@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 
 	pb "github.com/michaelcourcy/lvmo-csi/api/v1"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -42,7 +44,10 @@ func (Exec) Run(ctx context.Context, name string, args ...string) ([]byte, error
 }
 
 type Config struct {
-	Root, Server, Pool, Clients string
+	Root, Server, Pool string
+	// Clients is a fixed NFS client selector for every export. Empty exports
+	// each NFS volume only to the nodes it is published to.
+	Clients string
 	// ISCSIListenAddress selects an explicit local portal (Pod IP behind a Service).
 	// Empty preserves targetcli's default portal for standalone servers.
 	ISCSIListenAddress string
@@ -63,9 +68,13 @@ type state struct {
 	Deleting          map[string]bool         `json:"deleting,omitempty"`
 	Volumes           map[string]*pb.Volume   `json:"volumes"`
 	Snapshots         map[string]*pb.Snapshot `json:"snapshots"`
-	// Attachments maps an iSCSI volume to the nodes allowed to reach it (node ID
-	// to initiator). A present entry, even empty, keeps the target in ACL mode.
+	// Attachments maps a volume to the nodes allowed to reach it (node ID to
+	// initiator, empty for NFS). A present entry, even empty, keeps an iSCSI
+	// target in ACL mode and an NFS volume exported to those nodes only.
 	Attachments map[string]map[string]string `json:"attachments,omitempty"`
+	// NodeAddresses is the address each node's heartbeats come from: its NFS
+	// mounts take the same path to this server, through the same NAT if any.
+	NodeAddresses map[string]string `json:"node_addresses,omitempty"`
 }
 type Backend struct {
 	pb.UnimplementedStorageServer
@@ -73,6 +82,7 @@ type Backend struct {
 	cfg        Config
 	run        Runner
 	state      state
+	exportsDir string
 	lastExport int64
 	// Heartbeats are kept in memory: after a restart every node gets a full
 	// timeout from the start time before it can be fenced.
@@ -105,9 +115,6 @@ func New(cfg Config, run Runner) (*Backend, error) {
 			return nil, fmt.Errorf("invalid VG")
 		}
 	}
-	if cfg.Clients == "" {
-		cfg.Clients = "*"
-	}
 	if cfg.ISCSIQueueDepth < 0 || cfg.ISCSIQueueDepth > 512 {
 		return nil, fmt.Errorf("iSCSI queue depth must be between 0 and 512")
 	}
@@ -117,7 +124,7 @@ func New(cfg Config, run Runner) (*Backend, error) {
 	if strings.ContainsAny(cfg.Clients, " \n\t()") {
 		return nil, fmt.Errorf("invalid NFS client selector")
 	}
-	b := &Backend{cfg: cfg, run: run, state: state{Volumes: map[string]*pb.Volume{}, Snapshots: map[string]*pb.Snapshot{}}, heartbeats: map[string]time.Time{}, now: time.Now}
+	b := &Backend{cfg: cfg, run: run, state: state{Volumes: map[string]*pb.Volume{}, Snapshots: map[string]*pb.Snapshot{}}, exportsDir: "/etc/exports.d", heartbeats: map[string]time.Time{}, now: time.Now}
 	b.started = b.now()
 	if err := os.MkdirAll(cfg.Root, 0700); err != nil {
 		return nil, err
@@ -137,6 +144,9 @@ func New(cfg Config, run Runner) (*Backend, error) {
 	}
 	if b.state.Attachments == nil {
 		b.state.Attachments = map[string]map[string]string{}
+	}
+	if b.state.NodeAddresses == nil {
+		b.state.NodeAddresses = map[string]string{}
 	}
 	if b.state.SnapshotOrder == nil {
 		b.state.SnapshotOrder = map[string]uint64{}
@@ -301,8 +311,14 @@ func (b *Backend) CreateVolume(ctx context.Context, r *pb.CreateVolumeRequest) (
 	}
 	v := &pb.Volume{Id: id, Name: r.Name, Bytes: size, Vg: vg, Protocol: r.Protocol, Filesystem: fs, Server: b.cfg.Server, Path: filepath.Join(b.cfg.Root, "volumes", id), Iqn: "iqn.2026-09.io.lvmo:" + id, Lineage: lineage, Block: r.Block, SourceSnapshot: r.SourceSnapshot, SourceVolume: r.SourceVolume}
 	b.state.Volumes[id] = v
+	// A new NFS volume is exported to no node until it is published: its data
+	// (a clone or a restored snapshot) must not be readable by anyone first.
+	if v.Protocol == "nfs" && b.nodeExports() {
+		b.state.Attachments[id] = map[string]string{}
+	}
 	if err = b.save(); err != nil {
 		delete(b.state.Volumes, id)
+		delete(b.state.Attachments, id)
 		return nil, internal(err)
 	}
 	if src == "" {
@@ -422,14 +438,7 @@ func (b *Backend) publish(ctx context.Context, v *pb.Volume) error {
 				return err
 			}
 		}
-		if err := os.MkdirAll("/etc/exports.d", 0755); err != nil {
-			return err
-		}
-		line := b.nfsExportLine(v)
-		if err := os.WriteFile("/etc/exports.d/lvmo-"+v.Id+".exports", []byte(line), 0644); err != nil {
-			return err
-		}
-		return b.refreshExports(ctx)
+		return b.writeExport(ctx, v)
 	}
 	// targetcli operations are idempotent after checking the JSON configuration.
 	if err := b.cmd(ctx, "targetcli", "/backstores/block/"+v.Id, "ls"); err != nil {
@@ -526,8 +535,8 @@ func (b *Backend) PublishVolume(ctx context.Context, r *pb.VolumePublish) (*pb.E
 	if v == nil || !v.Ready || b.state.Deleting[r.VolumeId] {
 		return nil, status.Error(codes.NotFound, "volume not found")
 	}
-	if v.Protocol != "iscsi" {
-		return &pb.Empty{}, nil
+	if v.Protocol == "nfs" {
+		return b.publishNFS(ctx, v, r.NodeId)
 	}
 	if !validInitiator.MatchString(r.Initiator) {
 		return nil, status.Error(codes.FailedPrecondition, "node has no usable iSCSI initiator name")
@@ -568,7 +577,80 @@ func (b *Backend) Heartbeat(ctx context.Context, r *pb.NodeHeartbeat) (*pb.Empty
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.heartbeats[r.NodeId] = b.now()
-	return &pb.Empty{}, nil
+	return &pb.Empty{}, internal(b.learnAddress(ctx, r.NodeId))
+}
+
+// learnAddress records the address a node's calls come from and, when it
+// changes, exports the node's NFS volumes to the new one.
+func (b *Backend) learnAddress(ctx context.Context, node string) error {
+	address := peerAddress(ctx)
+	if !b.nodeExports() || address == "" || b.state.NodeAddresses[node] == address {
+		return nil
+	}
+	previous, had := b.state.NodeAddresses[node]
+	b.state.NodeAddresses[node] = address
+	if err := b.save(); err != nil {
+		if had {
+			b.state.NodeAddresses[node] = previous
+		} else {
+			delete(b.state.NodeAddresses, node)
+		}
+		return err
+	}
+	log.Printf("node %s reaches this server from %s", node, address)
+	for id, allowed := range b.state.Attachments {
+		if v := b.state.Volumes[id]; v != nil && v.Protocol == "nfs" {
+			if _, ok := allowed[node]; ok {
+				if err := b.writeExport(ctx, v); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func peerAddress(ctx context.Context) string {
+	p, ok := peer.FromContext(ctx)
+	if !ok {
+		return ""
+	}
+	tcp, ok := p.Addr.(*net.TCPAddr)
+	if !ok {
+		return ""
+	}
+	if ip4 := tcp.IP.To4(); ip4 != nil {
+		return ip4.String()
+	}
+	return tcp.IP.String()
+}
+
+// publishNFS exports the volume to the node too. Several nodes may share an
+// NFS volume.
+func (b *Backend) publishNFS(ctx context.Context, v *pb.Volume, node string) (*pb.Empty, error) {
+	if !b.nodeExports() {
+		return &pb.Empty{}, nil
+	}
+	if b.state.NodeAddresses[node] == "" {
+		return nil, status.Errorf(codes.Unavailable, "node %s has not sent a heartbeat to this server yet: its address is unknown", node)
+	}
+	allowed, restricted := b.state.Attachments[v.Id]
+	if _, ok := allowed[node]; ok {
+		return &pb.Empty{}, internal(b.writeExport(ctx, v))
+	}
+	if !restricted {
+		allowed = map[string]string{}
+		b.state.Attachments[v.Id] = allowed
+	}
+	allowed[node] = ""
+	if err := b.save(); err != nil {
+		delete(allowed, node)
+		if !restricted {
+			delete(b.state.Attachments, v.Id)
+		}
+		return nil, internal(err)
+	}
+	return &pb.Empty{}, internal(b.writeExport(ctx, v))
 }
 
 // FenceNode revokes a node from every iSCSI target it is published to and
@@ -622,8 +704,14 @@ func (b *Backend) FenceNode(ctx context.Context, r *pb.NodeFence) (*pb.FencedVol
 		return nil, internal(err)
 	}
 	for _, id := range out.VolumeIds {
-		if v := b.state.Volumes[id]; v != nil && v.Protocol == "iscsi" {
+		v := b.state.Volumes[id]
+		if v != nil && v.Protocol == "iscsi" {
 			if err := b.applyACL(ctx, v); err != nil {
+				return nil, internal(err)
+			}
+		}
+		if v != nil && v.Protocol == "nfs" {
+			if err := b.writeExport(ctx, v); err != nil {
 				return nil, internal(err)
 			}
 		}
@@ -642,7 +730,7 @@ func (b *Backend) UnpublishVolume(ctx context.Context, r *pb.VolumePublish) (*pb
 	}
 	v := b.state.Volumes[r.VolumeId]
 	allowed, fenced := b.state.Attachments[r.VolumeId]
-	if v == nil || v.Protocol != "iscsi" || !fenced {
+	if v == nil || !fenced {
 		return &pb.Empty{}, nil
 	}
 	for node := range allowed {
@@ -656,6 +744,9 @@ func (b *Backend) UnpublishVolume(ctx context.Context, r *pb.VolumePublish) (*pb
 	// Persist first: a restart then reapplies the reduced ACL instead of the old one.
 	if err := b.save(); err != nil {
 		return nil, internal(err)
+	}
+	if v.Protocol == "nfs" {
+		return &pb.Empty{}, internal(b.writeExport(ctx, v))
 	}
 	if err := b.applyACL(ctx, v); err != nil {
 		return nil, internal(err)
@@ -713,7 +804,7 @@ func (b *Backend) DeleteVolume(ctx context.Context, r *pb.ID) (*pb.Empty, error)
 		// Removing the exports file plus exportfs -ra is idempotent.
 
 		removed := false
-		if err := os.Remove("/etc/exports.d/lvmo-" + v.Id + ".exports"); err == nil {
+		if err := os.Remove(b.exportFile(v)); err == nil {
 			removed = true
 		} else if !os.IsNotExist(err) {
 			return nil, internal(err)
@@ -1048,7 +1139,56 @@ func (b *Backend) ReleaseVolume(ctx context.Context, r *pb.VolumeLease) (*pb.Emp
 	return &pb.Empty{}, internal(b.save())
 }
 
-// nfsExportLine is shared by provisioning and startup reconciliation via publish.
+func (b *Backend) nodeExports() bool { return b.cfg.Clients == "" }
+
+func (b *Backend) exportFile(v *pb.Volume) string {
+	return filepath.Join(b.exportsDir, "lvmo-"+v.Id+".exports")
+}
+
+// writeExport makes the volume's exports file match its clients, removing it
+// when no node may reach the volume, then refreshes the kernel's exports.
+func (b *Backend) writeExport(ctx context.Context, v *pb.Volume) error {
+	if line := b.nfsExportLine(v); line != "" {
+		if err := os.MkdirAll(b.exportsDir, 0755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(b.exportFile(v), []byte(line), 0644); err != nil {
+			return err
+		}
+	} else if err := os.Remove(b.exportFile(v)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return b.refreshExports(ctx)
+}
+
+// nfsClients lists who may mount the volume. With node exports, a volume that
+// was never published since it was created by an older version (no attachment
+// entry) stays open to every client until its first publication, as an iSCSI
+// target does, so that its existing mounts keep working.
+func (b *Backend) nfsClients(v *pb.Volume) []string {
+	if !b.nodeExports() {
+		return []string{b.cfg.Clients}
+	}
+	allowed, restricted := b.state.Attachments[v.Id]
+	if !restricted {
+		return []string{"*"}
+	}
+	unique := map[string]bool{}
+	for node := range allowed {
+		if address := b.state.NodeAddresses[node]; address != "" {
+			unique[address] = true
+		}
+	}
+	clients := make([]string, 0, len(unique))
+	for address := range unique {
+		clients = append(clients, address)
+	}
+	sort.Strings(clients)
+	return clients
+}
+
+// nfsExportLine is shared by provisioning and startup reconciliation via
+// publish. It is empty when no client may mount the volume.
 func (b *Backend) nfsExportLine(v *pb.Volume) string {
 	options := "rw,sync,no_subtree_check,no_root_squash"
 	if b.cfg.NFSInsecure {
@@ -1056,7 +1196,15 @@ func (b *Backend) nfsExportLine(v *pb.Volume) string {
 	}
 	// fsid is numeric, not a hexadecimal token.
 	n, _ := strconv.ParseUint(v.Id[2:10], 16, 32)
-	return fmt.Sprintf("%s %s(%s,fsid=%d)\n", v.Path, b.cfg.Clients, options, n)
+	clients := b.nfsClients(v)
+	if len(clients) == 0 {
+		return ""
+	}
+	line := v.Path
+	for _, client := range clients {
+		line += fmt.Sprintf(" %s(%s,fsid=%d)", client, options, n)
+	}
+	return line + "\n"
 }
 
 func (b *Backend) refreshExports(ctx context.Context) error {

@@ -24,7 +24,7 @@ stable ClusterIP Service and requiring no node/IP configuration.
   on eligible Linux test nodes, with loop, device-mapper thin pools, kernel
   NFS and LIO support and an IPv4 Pod network. All clients can reach the Service network. Record the
   baseline host listeners; Pod networking must not replace them. Use trusted
-  test clients: NFS exports default to `*`.
+  test clients: NFS volumes are exported to their attached nodes' addresses.
 - An existing non-lvmo Filesystem StorageClass can supply a 5Gi RWO source PVC
   on an eligible node. Record its provisioner, reclaim policy and binding mode. A local
   class may use WaitForFirstConsumer; placement must respect PV node affinity.

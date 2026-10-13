@@ -5,7 +5,10 @@ import (
 	"errors"
 	pb "github.com/michaelcourcy/lvmo-csi/api/v1"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -66,6 +69,7 @@ func testBackend(t *testing.T, r Runner) *Backend {
 	if e != nil {
 		t.Fatal(e)
 	}
+	b.exportsDir = t.TempDir()
 	return b
 }
 
@@ -383,8 +387,11 @@ func TestPublishValidation(t *testing.T) {
 	if _, e := b.PublishVolume(ctx, &pb.VolumePublish{VolumeId: "missing", NodeId: "lvmo:a:", Initiator: ""}); status.Code(e) != codes.NotFound {
 		t.Fatalf("missing volume: %v", e)
 	}
-	b.state.Volumes["nfs"] = &pb.Volume{Id: "nfs", Protocol: "nfs", Ready: true}
-	if _, e := b.PublishVolume(ctx, &pb.VolumePublish{VolumeId: "nfs", NodeId: "lvmo:a:"}); e != nil {
+	b.state.Volumes["v-nfs00000"] = &pb.Volume{Id: "v-nfs00000", Protocol: "nfs", Ready: true, Path: "/var/lib/lvmo/volumes/v-nfs00000"}
+	if _, e := b.Heartbeat(from("10.0.0.5"), &pb.NodeHeartbeat{NodeId: "lvmo:a:"}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := b.PublishVolume(ctx, &pb.VolumePublish{VolumeId: "v-nfs00000", NodeId: "lvmo:a:"}); e != nil {
 		t.Fatalf("NFS publish needs no initiator: %v", e)
 	}
 	iscsi, e := b.CreateVolume(ctx, &pb.CreateVolumeRequest{Name: "iscsi", Bytes: 128 << 20, Protocol: "iscsi"})
@@ -570,5 +577,147 @@ func TestXFSFormatIsUnchanged(t *testing.T) {
 	}
 	if got := r.last("mkfs."); !strings.HasPrefix(got, "mkfs.xfs -f /dev/vg/") {
 		t.Fatalf("unexpected format %q", got)
+	}
+}
+
+// from is the context of a call arriving from address.
+func from(address string) context.Context {
+	return peer.NewContext(context.Background(), &peer.Peer{Addr: &net.TCPAddr{IP: net.ParseIP(address), Port: 40000}})
+}
+
+func exported(t *testing.T, b *Backend, v *pb.Volume) string {
+	t.Helper()
+	data, err := os.ReadFile(b.exportFile(v))
+	if os.IsNotExist(err) {
+		return ""
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// With node exports, an NFS volume is exported to the nodes it is published
+// to, from the address their heartbeats come from, and to nobody else.
+func TestNFSExportsFollowPublishedNodes(t *testing.T) {
+	r := &recordingRunner{}
+	b := testBackend(t, r)
+	clock := b.started
+	b.now = func() time.Time { return clock }
+	ctx := context.Background()
+	v, e := b.CreateVolume(ctx, &pb.CreateVolumeRequest{Name: "shared", Bytes: 128 << 20, Protocol: "nfs"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if got := exported(t, b, v); got != "" {
+		t.Fatalf("new volume exported before publication: %q", got)
+	}
+	a, c := "lvmo:a:iqn.2004-10.com.ubuntu:01:a", "lvmo:c:iqn.2004-10.com.ubuntu:01:c"
+	if _, e = b.PublishVolume(ctx, &pb.VolumePublish{VolumeId: v.Id, NodeId: a}); status.Code(e) != codes.Unavailable {
+		t.Fatalf("published to a node of unknown address: %v", e)
+	}
+	// An IPv4-mapped IPv6 peer, as on a dual-stack listener, is exported as IPv4.
+	if _, e = b.Heartbeat(from("::ffff:10.0.0.5"), &pb.NodeHeartbeat{NodeId: a}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e = b.Heartbeat(from("10.0.0.6"), &pb.NodeHeartbeat{NodeId: c}); e != nil {
+		t.Fatal(e)
+	}
+	for _, node := range []string{a, c, a} {
+		if _, e = b.PublishVolume(ctx, &pb.VolumePublish{VolumeId: v.Id, NodeId: node}); e != nil {
+			t.Fatalf("publish to %s: %v", node, e)
+		}
+	}
+	both := v.Path + " 10.0.0.5(rw,sync,no_subtree_check,no_root_squash,fsid=" // RWX: both nodes
+	if got := exported(t, b, v); !strings.HasPrefix(got, both) || !strings.Contains(got, " 10.0.0.6(") || strings.Count(got, "(") != 2 {
+		t.Fatalf("not exported to both nodes: %q", got)
+	}
+	// A restart restores the same exports from the persisted state.
+	restarted, e := New(b.cfg, r)
+	if e != nil {
+		t.Fatal(e)
+	}
+	restarted.exportsDir = b.exportsDir
+	if e = os.Remove(b.exportFile(v)); e != nil {
+		t.Fatal(e)
+	}
+	if e = restarted.Reconcile(ctx); e != nil {
+		t.Fatal(e)
+	}
+	if got := exported(t, restarted, v); !strings.Contains(got, " 10.0.0.5(") || !strings.Contains(got, " 10.0.0.6(") {
+		t.Fatalf("restart lost the exports: %q", got)
+	}
+	// Detaching one node keeps the other.
+	if _, e = b.UnpublishVolume(ctx, &pb.VolumePublish{VolumeId: v.Id, NodeId: a}); e != nil {
+		t.Fatal(e)
+	}
+	if got := exported(t, b, v); strings.Contains(got, "10.0.0.5") || !strings.Contains(got, " 10.0.0.6(") {
+		t.Fatalf("unpublish changed the wrong node: %q", got)
+	}
+	// A node whose address changes is exported at the new one.
+	if _, e = b.Heartbeat(from("10.0.0.7"), &pb.NodeHeartbeat{NodeId: c}); e != nil {
+		t.Fatal(e)
+	}
+	if got := exported(t, b, v); strings.Contains(got, "10.0.0.6") || !strings.Contains(got, " 10.0.0.7(") {
+		t.Fatalf("address change not exported: %q", got)
+	}
+	// Fencing removes the node's export: NFS volumes can be fenced too.
+	clock = clock.Add(3 * time.Minute)
+	fenced, e := b.FenceNode(ctx, &pb.NodeFence{NodeName: "c", SilenceSeconds: 120})
+	if e != nil || len(fenced.VolumeIds) != 1 || fenced.VolumeIds[0] != v.Id {
+		t.Fatalf("NFS volume not fenced: %v %v", fenced, e)
+	}
+	if got := exported(t, b, v); got != "" {
+		t.Fatalf("fenced node still exported: %q", got)
+	}
+	if !strings.Contains(r.last("exportfs"), "-ra") {
+		t.Fatal("exports not refreshed")
+	}
+	// The volume can be deleted once no node is published.
+	if _, e = b.DeleteVolume(ctx, &pb.ID{Id: v.Id}); e != nil {
+		t.Fatal(e)
+	}
+}
+
+// A volume created by an older version, published before its upgrade, has no
+// attachment entry: it stays open, so that its mounts keep working, until it
+// is published again.
+func TestLegacyNFSVolumeOpenUntilPublished(t *testing.T) {
+	b := testBackend(t, &recordingRunner{})
+	v := &pb.Volume{Id: "v-12345678abcdef", Protocol: "nfs", Ready: true, Path: "/var/lib/lvmo/volumes/v-12345678abcdef"}
+	b.state.Volumes[v.Id] = v
+	if got := b.nfsExportLine(v); !strings.Contains(got, " *(rw,") {
+		t.Fatalf("legacy volume not open: %q", got)
+	}
+	node := "lvmo:a:iqn.2004-10.com.ubuntu:01:a"
+	if _, e := b.Heartbeat(from("10.0.0.5"), &pb.NodeHeartbeat{NodeId: node}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := b.PublishVolume(context.Background(), &pb.VolumePublish{VolumeId: v.Id, NodeId: node}); e != nil {
+		t.Fatal(e)
+	}
+	if got := exported(t, b, v); strings.Contains(got, "*") || !strings.Contains(got, " 10.0.0.5(") {
+		t.Fatalf("published legacy volume not restricted: %q", got)
+	}
+}
+
+// A fixed client selector keeps the earlier behaviour: every NFS volume is
+// exported to it, publication changes nothing and needs no heartbeat.
+func TestFixedNFSClientSelector(t *testing.T) {
+	b := testBackend(t, &recordingRunner{})
+	b.cfg.Clients = "10.0.0.0/24"
+	ctx := context.Background()
+	v, e := b.CreateVolume(ctx, &pb.CreateVolumeRequest{Name: "fixed", Bytes: 128 << 20, Protocol: "nfs"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	if got := exported(t, b, v); !strings.HasPrefix(got, v.Path+" 10.0.0.0/24(") {
+		t.Fatalf("fixed selector not exported: %q", got)
+	}
+	if _, e = b.PublishVolume(ctx, &pb.VolumePublish{VolumeId: v.Id, NodeId: "lvmo:a:"}); e != nil {
+		t.Fatalf("publish needs no heartbeat with a fixed selector: %v", e)
+	}
+	if len(b.state.Attachments[v.Id]) != 0 {
+		t.Fatalf("attachment recorded with a fixed selector: %v", b.state.Attachments[v.Id])
 	}
 }

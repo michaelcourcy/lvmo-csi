@@ -1,11 +1,13 @@
 # Pod-based test storage server
 
-> **Prerelease:** the two-chart installation below uses `v0.2.0-alpha.2`.
-> Older combined charts still use `create-storage-server`.
-> Since `v0.2.0-alpha.2` the driver and its storage servers use mutual TLS on
-> the API, with certificates from cert-manager: install cert-manager before
-> upgrading, then upgrade the driver, then each server, and give standalone
-> servers their certificate ([guide](storage-server.md#give-the-api-its-certificate)).
+> **Release `v0.2.0`:** the two-chart installation below uses `v0.2.0`.
+> Releases `v0.1.x` used one combined chart (`create-storage-server`): move to
+> the two charts with a fresh installation. Since `v0.2.0` the driver and its
+> storage servers use mutual TLS on the API, with certificates from
+> cert-manager: install cert-manager before upgrading, then upgrade the driver,
+> then each server, and give standalone servers their certificate
+> ([guide](storage-server.md#give-the-api-its-certificate)). NFS volumes are exported
+> only to the nodes they are attached to ([NFS access](storage-server.md#nfs-access)).
 
 Install one `lvmo/lvmo-csi` driver release per cluster and independently install
 one or more `lvmo/lvmo-csi-storage-server` releases. The containerized server is
@@ -34,9 +36,9 @@ helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager -
   --namespace cert-manager --create-namespace --set crds.enabled=true --wait
 helm repo add lvmo https://michaelcourcy.github.io/lvmo-csi
 helm repo update
-helm upgrade --install lvmo lvmo/lvmo-csi --version 0.2.0-alpha.2 \
+helm upgrade --install lvmo lvmo/lvmo-csi --version 0.2.0 \
   --namespace lvmo-csi --create-namespace
-helm upgrade --install server-a lvmo/lvmo-csi-storage-server --version 0.2.0-alpha.2 \
+helm upgrade --install server-a lvmo/lvmo-csi-storage-server --version 0.2.0 \
   --namespace lvmo-csi --create-namespace \
   --set source-storage-class=my-local-storageclass
 ```
@@ -120,7 +122,7 @@ in `lvmo-csi`, install two servers in `lvmo-storage`:
 
 ```sh
 for server in server-a server-b; do
-  helm upgrade --install "$server" lvmo/lvmo-csi-storage-server --version 0.2.0-alpha.2 \
+  helm upgrade --install "$server" lvmo/lvmo-csi-storage-server --version 0.2.0 \
     --namespace lvmo-storage --create-namespace \
     --set source-storage-class=my-local-storageclass
 done
@@ -208,17 +210,17 @@ is missing, or offline without `tls.clientCA`.
 `tls.existingSecret` and `apiTLS.existingSecret` take certificates from your
 own PKI instead, with `tls.crt`, `tls.key` and `ca.crt` keys, where `ca.crt` is
 the other side's CA; cert-manager is then not needed. Keep the CA that signs
-the driver's certificate for that use only. The NFS and iSCSI ports remain
-unauthenticated, as on a standalone server.
+the driver's certificate for that use only. The NFS and iSCSI ports are
+limited per volume to its attached nodes, by address and initiator name.
 
 ### Without TLS
 
 For an isolated test cluster only, turn TLS off on both charts:
 
 ```sh
-helm upgrade --install lvmo lvmo/lvmo-csi --version 0.2.0-alpha.2 \
+helm upgrade --install lvmo lvmo/lvmo-csi --version 0.2.0 \
   --namespace lvmo-csi --create-namespace --set apiTLS.enabled=false
-helm upgrade --install server-a lvmo/lvmo-csi-storage-server --version 0.2.0-alpha.2 \
+helm upgrade --install server-a lvmo/lvmo-csi-storage-server --version 0.2.0 \
   --namespace lvmo-csi --set source-storage-class=my-local-storageclass --set tls.enabled=false
 ```
 
@@ -231,6 +233,29 @@ helm upgrade --install server-a lvmo/lvmo-csi-storage-server --version 0.2.0-alp
   `--tls-*` options ([standalone server](storage-server.md#give-the-api-its-certificate)).
 - Each side without TLS logs a `WARNING` at startup. Anything that can reach
   port 50051 can then list, attach, read and delete every volume.
+
+## OpenShift
+
+Install the driver with `--set openshift=true --set nodeCheck.iscsi=false`
+when the workers do not run `iscsid` (enabling it on Red Hat CoreOS reboots
+them, [nodes.md](nodes.md#openshift)), and each server with
+`--set openshift=true`:
+
+- The server is privileged and mounts host paths, and its pre-delete guard
+  reads root-owned state. Both run as service account `<release>-storage`,
+  which a Role of the release namespace allows to use the built-in
+  `privileged` SCC. No SCC is created.
+- cert-manager can come from OLM: the cert-manager Operator for Red Hat
+  OpenShift runs cert-manager in namespace `cert-manager`, the driver chart's
+  `apiTLS.certManagerNamespace` default.
+- With OVN-Kubernetes, a node's host network reaches a Service from a per-node
+  address (`100.64.0.x`), not its InternalIP. The server exports NFS volumes to
+  the address it sees on each node's heartbeats, so this needs no setting.
+- CRI-O refuses the capability drop `dbus-daemon` makes when it switches to its
+  own user; the server then runs D-Bus as root, inside its container.
+
+Validated on OpenShift 4.18 on Azure with NFS volumes, 13 October 2026
+([scenario](../tests/scenarios/nfs-node-exports.md)).
 
 ## Resources and data path
 
@@ -328,9 +353,10 @@ server rebuilds only its own persisted targets on startup to discard sockets
 left in an old Pod network namespace. LIO configuration and block devices remain
 host-wide despite Pod networking; use authorized test nodes with kernel support.
 
-NFS exports use the client selector `*` inside the Pod. Pod networking is not an
-access-control boundary: restrict reachability to trusted test clients through
-the cluster's network controls. The management API itself requires mutual TLS ([Mutual TLS](#mutual-tls)).
+Each NFS volume is exported only to the nodes it is attached to, at the
+address their heartbeats reach the server from
+([NFS access](storage-server.md#nfs-access)). Pods keep their own address
+towards the Service, so even a Pod on an attached node cannot mount the volume. The management API itself requires mutual TLS ([Mutual TLS](#mutual-tls)).
 Only NFSv4 is exposed; NFSv3 port mapping is not published by the Service.
 
 The entrypoint starts services without systemd and exits if the API or mountd exits. Restrict LVM
@@ -445,10 +471,14 @@ reading the mount table. That fix alone did not solve the container root path.
 
 The server exports `/backing/nfs-root` read-only with `fsid=0` and client
 selector `*`. Only the volume directory is mirrored beneath it using a shared
-bind mount confined to the Pod's private mount namespace. The image's exportfs
-adapter publishes each mirrored child with its own writable policy and fsid.
-Neither `disk.img` nor `state.json` is inside the exported root. Root access
-remains squashed on the root; application exports retain lvmo's existing policy.
+bind mount confined to the Pod's private mount namespace, and that mirrored
+directory is exported read-only to `*` with `nohide`, so that clients can walk
+from the root to a volume. The image's exportfs adapter publishes each mirrored
+volume with its own writable policy, fsid and clients: the nodes it is attached
+to. Neither export uses `crossmnt`: it would let every client cross, read-only,
+into every volume mounted below, whatever the volume's own export. Any other
+client sees a volume as an empty directory. Neither `disk.img` nor `state.json`
+is inside the exported root.
 
 The [reference Kubernetes manifest](https://github.com/kastendevhub/enterprise-blueprint/blob/main/generic-rwx-storage/nfs-server.yaml)
 uses `itsthenetwork/nfs-server-alpine`; its startup script explicitly exports a

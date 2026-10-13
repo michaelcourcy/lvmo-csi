@@ -16,6 +16,8 @@
 {{- $tlsIssuer := $tls.issuer | default "lvmo-csi-api" -}}
 {{- $tlsSecret := $tls.existingSecret | default (printf "%s-api-tls" $name) -}}
 {{- $tlsClientCA := $tls.clientCA | default "" -}}
+{{- $openshift := $v.openshift | default false -}}
+{{- if not (kindIs "bool" $openshift) }}{{ fail "openshift must be true or false" }}{{ end }}
 {{- if and $tlsEnabled (not $tls.existingSecret) }}
 {{- if not (.Capabilities.APIVersions.Has "cert-manager.io/v1/Certificate") }}{{ fail "cert-manager is missing. The API uses mutual TLS with a certificate from cert-manager: install cert-manager, then the lvmo-csi driver chart (it creates the ClusterIssuer), then this chart. Or set tls.existingSecret, or tls.enabled=false for a driver installed with apiTLS.enabled=false." }}{{ end }}
 {{- /*
@@ -50,6 +52,39 @@ tls.clientCA must give it.
 {{- if $old }}
 {{- $a := $old.metadata.annotations }}
 {{- if or (ne (index $a "lvmo.csi.io/source-class") (index $v "source-storage-class")) (ne (index $a "lvmo.csi.io/size") $v.size) (ne (index $a "lvmo.csi.io/prefix") $prefix) (ne (index $a "lvmo.csi.io/address") $address) (ne (index $a "lvmo.csi.io/block-mode" | default "false") (toString $block)) (and $block (ne (index $a "lvmo.csi.io/state-size") $stateSize)) }}{{ fail "test server backing identity is immutable; clean up before migration" }}{{ end }}
+{{- end }}
+{{- if $openshift }}
+# The server is privileged and uses host paths; its guard reads root-owned
+# state. Both run as this account, allowed to use the built-in privileged SCC.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}-privileged-scc
+rules:
+- apiGroups: [security.openshift.io]
+  resources: [securitycontextconstraints]
+  resourceNames: [privileged]
+  verbs: [use]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}-privileged-scc
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}-privileged-scc
+subjects:
+- kind: ServiceAccount
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+---
 {{- end }}
 apiVersion: v1
 kind: Service
@@ -160,6 +195,9 @@ spec:
       hostNetwork: false
       dnsPolicy: ClusterFirst
       automountServiceAccountToken: false
+      {{- if $openshift }}
+      serviceAccountName: {{ $name }}
+      {{- end }}
       nodeSelector:
         kubernetes.io/os: linux
       terminationGracePeriodSeconds: 120
@@ -308,6 +346,9 @@ spec:
     spec:
       restartPolicy: Never
       automountServiceAccountToken: false
+      {{- if $openshift }}
+      serviceAccountName: {{ $name }}
+      {{- end }}
       affinity:
         podAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:

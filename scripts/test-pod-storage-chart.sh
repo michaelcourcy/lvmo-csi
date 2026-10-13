@@ -65,6 +65,11 @@ if helm template test "$server" --set source-storage-class=external "${cm[@]}" >
 grep -Fq 'tls.clientCA is required when rendering offline' "$tmp/bad"
 if helm template test "$server" --set source-storage-class=external >"$tmp/bad" 2>&1; then echo 'Server without cert-manager accepted'; exit 1; fi
 grep -Fq 'cert-manager is missing' "$tmp/bad"
+helm template test "$server" "${args[@]}" --set openshift=true >"$tmp/openshift"
+[[ $(grep -c 'serviceAccountName: test-storage' "$tmp/openshift") == 2 ]] || { echo 'Server and guard not on the OpenShift account'; exit 1; }
+grep -q 'resourceNames: \[privileged\]' "$tmp/openshift"
+absent -Eq 'serviceAccountName|kind: Role' "$tmp/server"
+absent -q 'kind: SecurityContextConstraints' "$tmp/openshift"
 helm template test "$server" --set source-storage-class=external --set tls.enabled=false >"$tmp/plain"
 absent -Eq 'api-tls|TLS_DIR|cert-manager.io' "$tmp/plain"
 helm template test "$server" --set source-storage-class=external --set tls.existingSecret=own-server >"$tmp/own"

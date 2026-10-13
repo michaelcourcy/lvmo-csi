@@ -25,6 +25,9 @@ tls:
   # certificate (tls.crt, tls.key) for <release>-storage.<namespace>.svc and
   # the CA that signs the driver's client certificate (ca.crt).
   existingSecret: ""
+# true on OpenShift: the server and its pre-delete guard run as a dedicated
+# service account allowed to use the built-in privileged SCC.
+openshift: false
 image:
   repository: michaelcourcy/lvmo-csi-storage-server
   # Empty uses Chart.appVersion.

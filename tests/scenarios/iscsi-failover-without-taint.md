@@ -57,5 +57,5 @@ Passed on `eks-paris` on 2026-10-03 with image `dev-iscsi-failover-2`: after a f
 - A node is declared dead only when both signals have been lost for the timeout: Kubernetes reports it not Ready, and its lvmo node plugin has stopped sending heartbeats to the storage server. The storage server, which receives the heartbeats, refuses to fence a node it heard from within the timeout.
 - Fencing removes the node from every target it is attached to, closes its sessions and releases its ownership, before any pod is deleted.
 - Only pods using lvmo volumes are force-deleted. Kubernetes then detaches the volume from the dead node after its built-in 6-minute timeout, unless the cluster disables forced detach on timeout. Other volumes and pods on the node are left to Kubernetes.
-- Pods using lvmo NFS volumes are moved too, because the attach step would otherwise strand single-node NFS volumes on the dead node. They are not fenced: the storage server cannot fence an NFS client.
+- Pods using lvmo NFS volumes are moved too, because the attach step would otherwise strand single-node NFS volumes on the dead node. With node exports (the API's default, no `--nfs-clients`), fencing also removes the dead node's NFS exports; with a fixed `--nfs-clients` selector they are not fenced.
 - Failover is on by default and can be disabled in the chart (`failover.enabled=false`).

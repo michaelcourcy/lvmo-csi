@@ -49,6 +49,7 @@ A privileged, single-replica **test** server backed by a PVC.
 | `tls.issuer` | `lvmo-csi-api` | ClusterIssuer that signs the server's certificate: the driver's `apiTLS.issuer` | [Mutual TLS](pod-storage-server.md#mutual-tls) |
 | `tls.clientCA` | empty | The driver CA certificate (PEM). Needed only to render offline (`helm template`, Argo CD); otherwise read from the driver's namespace | [Mutual TLS](pod-storage-server.md#mutual-tls) |
 | `tls.existingSecret` | empty | A Secret of your own (`tls.crt`, `tls.key`: server certificate; `ca.crt`: the driver CA) instead of cert-manager | [Mutual TLS](pod-storage-server.md#mutual-tls) |
+| `openshift` | `false` | `true` on OpenShift: the server and its pre-delete guard run as a service account allowed, by a Role of the release namespace, to use the built-in `privileged` SCC | [OpenShift](pod-storage-server.md#openshift) |
 | `image.repository` | `michaelcourcy/lvmo-csi-storage-server` | Server image | [Images](#images) |
 | `image.tag` | empty: the chart's appVersion | Server image tag | [Images](#images) |
 | `image.pullPolicy` | `IfNotPresent` | Pull policy of the server image | [Images](#images) |

@@ -90,6 +90,16 @@ touch "$root/initialized"
 vgchange -ay "$vg"
 mkdir -p /run/dbus
 dbus-daemon --system --fork
+sleep 1
+# dbus-daemon switches to the messagebus user and drops capabilities, which
+# CRI-O (OpenShift) refuses: it then exits at once. The container is already
+# isolated, so run it as root instead, from a copy of the system configuration
+# kept next to it for its relative includes.
+if ! dbus-send --system --dest=org.freedesktop.DBus --type=method_call /org/freedesktop/DBus org.freedesktop.DBus.GetId >/dev/null 2>&1; then
+  rm -f /run/dbus/pid /run/dbus/system_bus_socket
+  sed '/<user>/d' /usr/share/dbus-1/system.conf >/usr/share/dbus-1/system-root.conf
+  dbus-daemon --config-file=/usr/share/dbus-1/system-root.conf --fork
+fi
 # LIO configfs is host-wide. Bind only this Pod's IP, never a shared wildcard.
 targetcli set global auto_add_default_portal=false
 # A previous Pod may have left targets whose sockets belong to its old network
@@ -111,8 +121,17 @@ mount --bind "$root/state/volumes" "$root/state/volumes"
 mount --make-shared "$root/state/volumes"
 mount --rbind "$root/state/volumes" "$root/nfs-root/backing/state/volumes"
 mkdir -p /etc/exports.d
-printf '%s %s(ro,sync,fsid=0,crossmnt,no_subtree_check,root_squash)\n' "$root/nfs-root" "$clients" >/etc/exports.d/lvmo-pod-root.exports
+# The read-only root and the mirrored volumes directory give clients the path
+# to each volume. No crossmnt: it would let any client cross, read-only, into
+# every volume mounted below. Each volume is exported only to its nodes, and is
+# an empty directory to every other client.
+printf '%s %s(ro,sync,fsid=0,no_subtree_check,root_squash)\n' "$root/nfs-root" "$clients" >/etc/exports.d/lvmo-pod-root.exports
+printf '%s %s(ro,sync,nohide,fsid=1,no_subtree_check,root_squash)\n' "$root/nfs-root/backing/state/volumes" "$clients" >/etc/exports.d/lvmo-pod-volumes.exports
 exportfs -ra
+# Ubuntu enables manage-gids: the server would replace the groups a client
+# sends with the groups of that UID in its own /etc/group. Pod UIDs and fsGroup
+# exist only on the nodes, so group permissions, fsGroup included, would fail.
+nfsconf --set mountd manage-gids n
 rpc.mountd -F -N 3 &
 mountd=$!
 cleanup() {
@@ -122,7 +141,10 @@ cleanup() {
   for f in /etc/exports.d/lvmo-*.exports; do
     [[ -f "$f" ]] || continue
     path=$(awk '{print $1}' "$f")
-    exportfs -u "$clients:$path" || true
+    # One export per client: a published volume lists its nodes' addresses.
+    for client in $(awk '{for (i = 2; i <= NF; i++) {sub(/\(.*/, "", $i); print $i}}' "$f"); do
+      exportfs -u "$client:$path" || true
+    done
     rm -f "$f"
   done
   if [[ -f "$root/state/state.json" ]]; then
@@ -141,6 +163,7 @@ trap cleanup EXIT
 trap 'exit 0' TERM INT
 tls=()
 [[ -z ${TLS_DIR:-} ]] || tls=(--tls-cert="$TLS_DIR/tls.crt" --tls-key="$TLS_DIR/tls.key" --tls-client-ca="$TLS_DIR/ca.crt")
-/usr/local/bin/lvmo-csi -P=50051 "${tls[@]}" --root="$root/state" --server="$SERVER" --nfs-clients="$clients" --iscsi-listen-address="$POD_IP" "$vg" 9>&- &
+# No --nfs-clients: each NFS volume is exported only to the nodes it is attached to.
+/usr/local/bin/lvmo-csi -P=50051 "${tls[@]}" --root="$root/state" --server="$SERVER" --iscsi-listen-address="$POD_IP" "$vg" 9>&- &
 api=$!
 wait -n "$api" "$mountd"

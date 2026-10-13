@@ -6,7 +6,10 @@ apt-get install -y -qq lvm2 thin-provisioning-tools nfs-kernel-server targetcli-
 modprobe dm_thin_pool
 modprobe target_core_mod
 modprobe iscsi_target_mod
+# Pod UIDs and fsGroup exist only on the nodes: keep the groups clients send.
+nfsconf --set mountd manage-gids n
 systemctl enable --now nfs-server iscsid
+systemctl restart nfs-server
 root=$(cd "$(dirname "$0")/.." && pwd)
 bash "$root/scripts/prepare-storage.sh"
 if [[ -n ${RELEASE_VERSION:-} ]]; then
