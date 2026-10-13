@@ -375,7 +375,6 @@ One driver installation can use several storage servers: build each one with thi
 The architecture is one driver to many storage servers: a storage server serves exactly one lvmo driver installation, in one Kubernetes cluster. Never point StorageClasses of two clusters at the same server, or at the same VG on it. Such a configuration is not supported:
 
 - The server trusts the certificates of one driver, and presents a certificate that only that driver's cluster trusts. The driver of another cluster refuses it.
-- Failover fences a dead node by its name. A node of the other cluster with the same name would lose its iSCSI volumes.
-- Every driver connected to a server lists all of that server's volumes and snapshots as its own.
+- Failover fences a dead node by its name, and the server refuses while any node of that name still sends heartbeats. A live node of the other cluster with the same name therefore blocks failover; if both are silent, both are fenced.
 
 To give storage to another cluster, build another server, or install the pod storage server chart in that cluster.
