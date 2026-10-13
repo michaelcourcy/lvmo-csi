@@ -180,6 +180,13 @@ Each side trusts the other side's CA only:
 - cert-manager renews the certificates 30 days before they expire. The server
   and the driver read the files at every new connection, so no pod restarts.
 
+The driver's certificate is an administrator credential: it gives full control
+of every VG on every storage server that trusts it, to create, attach, read and
+delete any volume or snapshot and to fence nodes. Whoever can read Secret
+`lvmo-csi-api-client`, or the driver CA's key in Secret `lvmo-csi-api-driver-ca`,
+in the driver's namespace controls all lvmo storage. Restrict access to that
+namespace accordingly.
+
 The server chart finds the driver CA in the driver's namespace, which the
 ClusterIssuer names in its annotation `lvmo.csi.io/driver-namespace`: install
 the driver first, with `--wait`. It reads it again at every `helm upgrade`. If
