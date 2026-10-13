@@ -369,3 +369,13 @@ To add capacity with a different chunk size, separate disks, or another class of
 ### Several servers
 
 One driver installation can use several storage servers: build each one with this guide, and give each its own StorageClasses, with its own `endpoint`. Use stable DNS names in `endpoint`. Existing volumes keep the endpoint they were created with, even if a StorageClass changes.
+
+### One cluster per server
+
+The architecture is one driver to many storage servers: a storage server serves exactly one lvmo driver installation, in one Kubernetes cluster. Never point StorageClasses of two clusters at the same server, or at the same VG on it. Such a configuration is not supported:
+
+- The server trusts the certificates of one driver, and presents a certificate that only that driver's cluster trusts. The driver of another cluster refuses it.
+- Failover fences a dead node by its name. A node of the other cluster with the same name would lose its iSCSI volumes.
+- Every driver connected to a server lists all of that server's volumes and snapshots as its own.
+
+To give storage to another cluster, build another server, or install the pod storage server chart in that cluster.

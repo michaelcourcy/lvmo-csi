@@ -134,6 +134,10 @@ release name. StorageClass names are cluster-wide: reuse of a release name in
 another namespace requires a distinct `dest-storage-class-prefix`. Collisions
 must fail without adopting another release's resources.
 
+Each server release serves only the driver of its own cluster: one driver,
+many servers, never one server for several drivers
+([one cluster per server](storage-server.md#one-cluster-per-server)).
+
 Network policy and routing must permit management access from the driver and
 NFS/iSCSI access from client nodes. Namespace placement does not provide storage
 isolation or relax the host privileges and kernel prerequisites below.

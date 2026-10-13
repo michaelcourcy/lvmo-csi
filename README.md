@@ -79,13 +79,13 @@ Kasten 9.0.7 block-mode export and restore were validated for iSCSI Filesystem v
 
 LVM thin volumes for Kubernetes, exported over NFS or iSCSI through one CSI driver (`lvmo.csi.io`). Every PVC gets its own logical volume. NFS supports RWX filesystems; iSCSI supports RWO ext4/XFS filesystems and raw block devices. Snapshots and clones use LVM thin snapshots. The CSI SnapshotMetadata service exposes allocated and changed block ranges for KEP-3314.
 
-This is an initial implementation for evaluation. Each volume resides on one storage server, with no replication or automatic failover. One driver installation can manage multiple servers. Kasten consumption of the metadata service is **not validated** for the moment.
+This is an initial implementation for evaluation. Each volume resides on one storage server, with no replication or automatic failover. One driver installation can manage multiple servers, but each storage server belongs to exactly one driver installation, in one cluster: two clusters must not share a server ([why](docs/storage-server.md#one-cluster-per-server)). Kasten consumption of the metadata service is **not validated** for the moment.
 
 
 ```mermaid
 flowchart LR
     K[Kubernetes CSI sidecars] -->|CSI gRPC| D[lvmo driver]
-    D -->|Management gRPC| A[lvmo API on Linux]
+    D -->|Management gRPC, mutual TLS| A[lvmo API on Linux]
     A --> L[LVM thin pools]
     L -->|NFS files| W[RWX applications]
     L -->|iSCSI filesystem or block| R[RWO applications]
