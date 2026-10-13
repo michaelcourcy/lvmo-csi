@@ -49,26 +49,10 @@ Migration of existing combined installations is outside this change. Clean up
 old test consumers and snapshots with the old installation before uninstalling
 it and explicitly deleting its retained backing PVC for a fresh installation.
 
-| Chart | Value | Default / meaning |
-|---|---|---|
-| Driver | `snapshotClass.enabled` | `true`; create the shared class unless explicitly disabled |
-| Driver | `snapshotClass.name` | `lvmo-snapshots` |
-| Driver | `snapshotClass.deletionPolicy` | `Delete`; also accepts `Retain` |
-| Driver | `snapshotClass.kasten` | `true`; add `k10.kasten.io/is-snapshot-class: "true"`; set false to omit |
-| Server | `source-storage-class` | Required existing non-lvmo class; Filesystem, or Block in block mode |
-| Server | `size` | `50Gi` |
-| Server | `block-mode` | `false`; `true` uses a Block-mode PVC as the LVM physical volume, see [Block mode](#block-mode) |
-| Server | `state-size` | `1Gi`; size of the Filesystem state PVC in block mode |
-| Server | `dest-storage-class-prefix` | Empty means the server release name; explicit override allowed |
-| Server | `resources` | `{}`; no chart-supplied CPU/memory requests or limits |
-| Driver | `apiTLS.enabled` | `true`; mutual TLS to every storage server's API, with cert-manager |
-| Driver | `apiTLS.issuer` | `lvmo-csi-api`; the ClusterIssuer the chart creates, and the prefix of its CA resources |
-| Driver | `apiTLS.certManagerNamespace` | `cert-manager`; where cert-manager keeps ClusterIssuer keys |
-| Driver | `apiTLS.existingSecret` | Empty; a Secret with your own client certificate instead of cert-manager |
-| Server | `tls.enabled` | `true`; serve the API with mutual TLS only |
-| Server | `tls.issuer` | `lvmo-csi-api`; must match the driver's `apiTLS.issuer` |
-| Server | `tls.clientCA` | Empty; the driver CA certificate, needed only to render offline |
-| Server | `tls.existingSecret` | Empty; a Secret with your own server certificate instead of cert-manager |
+Every value of both charts, with its default and a link to the section that
+explains it, is in the [Helm values reference](helm-values.md).
+
+### Snapshot CRDs
 
 When creation is enabled, install/upgrade must check that the
 `snapshot.storage.k8s.io/v1` VolumeSnapshotClass API is available. If it is
@@ -86,6 +70,8 @@ Offline `helm template` checks that expect snapshot output must advertise
 `--api-versions snapshot.storage.k8s.io/v1/VolumeSnapshotClass`; without that
 capability, default rendering must show the same explicit error. Rendering
 with `--set snapshotClass.enabled=false` must work without that capability.
+
+### Server resources
 
 Server resource requests and limits are optional and independently configurable
 through standard Kubernetes `resources` values. For example:
@@ -106,6 +92,8 @@ or require explicit values. Resource configuration does not change the backing
 PVC's capacity. The 5Gi sizes in test scenarios are explicit test overrides;
 the chart default is 50Gi.
 
+### Shared snapshot class
+
 Only the driver chart creates the optional shared VolumeSnapshotClass. It is
 cluster-scoped, selects `lvmo.csi.io`, and contains no server endpoint or VG.
 The source volume handle routes snapshot creation to its backend. One class
@@ -115,6 +103,8 @@ are useful for different policies, such as `Retain`, not for different servers.
 Use an existing class with `snapshotClass.enabled=false` when it is managed
 elsewhere. Configure at most one Kasten-preferred class for `lvmo.csi.io`.
 No Kubernetes default-snapshot-class annotation is implied by the Kasten option.
+
+### Value formats
 
 The driver retains its current driver, sidecar, OpenShift and metadata values.
 Server settings move out of `create-storage-server` to the server chart root.
@@ -207,9 +197,29 @@ is missing, or offline without `tls.clientCA`.
 `tls.existingSecret` and `apiTLS.existingSecret` take certificates from your
 own PKI instead, with `tls.crt`, `tls.key` and `ca.crt` keys, where `ca.crt` is
 the other side's CA; cert-manager is then not needed. Keep the CA that signs
-the driver's certificate for that use only. `tls.enabled=false` with `apiTLS.enabled=false` turns TLS off;
-use it only on an isolated test cluster. The NFS and iSCSI ports remain
+the driver's certificate for that use only. The NFS and iSCSI ports remain
 unauthenticated, as on a standalone server.
+
+### Without TLS
+
+For an isolated test cluster only, turn TLS off on both charts:
+
+```sh
+helm upgrade --install lvmo lvmo/lvmo-csi --version 0.2.0-alpha.2 \
+  --namespace lvmo-csi --create-namespace --set apiTLS.enabled=false
+helm upgrade --install server-a lvmo/lvmo-csi-storage-server --version 0.2.0-alpha.2 \
+  --namespace lvmo-csi --set source-storage-class=my-local-storageclass --set tls.enabled=false
+```
+
+- cert-manager is then not needed, and the charts create no certificate,
+  issuer or CA.
+- Both sides must agree. A driver with `apiTLS.enabled=false` cannot reach a
+  server with TLS, and a driver with TLS cannot reach a server without it:
+  provisioning fails with a connection or handshake error.
+- A standalone server is without TLS when its API starts without the three
+  `--tls-*` options ([standalone server](storage-server.md#give-the-api-its-certificate)).
+- Each side without TLS logs a `WARNING` at startup. Anything that can reach
+  port 50051 can then list, attach, read and delete every volume.
 
 ## Resources and data path
 
@@ -309,7 +319,7 @@ host-wide despite Pod networking; use authorized test nodes with kernel support.
 
 NFS exports use the client selector `*` inside the Pod. Pod networking is not an
 access-control boundary: restrict reachability to trusted test clients through
-the cluster's network controls. There is no new management API authentication.
+the cluster's network controls. The management API itself requires mutual TLS ([Mutual TLS](#mutual-tls)).
 Only NFSv4 is exposed; NFSv3 port mapping is not published by the Service.
 
 The entrypoint starts services without systemd and exits if the API or mountd exits. Restrict LVM

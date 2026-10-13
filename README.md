@@ -42,7 +42,8 @@ capacity to 500Gi. Each server owns
 its NFS/iSCSI classes, with Kasten block-mode export enabled on iSCSI only.
 Servers may share the driver namespace or run in separate namespaces; multiple
 server releases can share a namespace. See [values, layouts and
-lifecycle](docs/pod-storage-server.md).
+lifecycle](docs/pod-storage-server.md), and every chart option in the [Helm values
+reference](docs/helm-values.md).
 
 Delete consumer PVCs and snapshots before uninstalling the server; removal is
 refused while backend data remains. Uninstall retains source PVC
@@ -157,7 +158,7 @@ The API persists operation intents and deletion tombstones atomically. Incomplet
 
 Install the VolumeSnapshot CRDs and snapshot controller separately if your distribution does not already provide them. The charts do not own those prerequisites. In the split charts, the driver creates one shared Kasten-annotated VolumeSnapshotClass by default (`snapshotClass.enabled=true`, `snapshotClass.kasten=true`); server charts own their StorageClasses. For externally managed classes, set `snapshotClass.enabled=false`. Missing snapshot CRDs produce an explicit error with a setup link and this opt-out.
 
-The driver reaches each storage server's API over mutual TLS (`apiTLS.enabled`, on by default). The chart then needs [cert-manager](https://cert-manager.io/docs/installation/helm/): it creates a server CA, with the ClusterIssuer `lvmo-csi-api` that signs storage servers' certificates, and a driver CA, usable only in the driver's namespace, that signs the driver's client certificate. Certificates are renewed and reloaded without restarts. `apiTLS.existingSecret` uses a certificate of your own instead. Install cert-manager first:
+The driver reaches each storage server's API over mutual TLS (`apiTLS.enabled`, on by default). The chart then needs [cert-manager](https://cert-manager.io/docs/installation/helm/): it creates a server CA, with the ClusterIssuer `lvmo-csi-api` that signs storage servers' certificates, and a driver CA, usable only in the driver's namespace, that signs the driver's client certificate. Certificates are renewed and reloaded without restarts. `apiTLS.existingSecret` uses a certificate of your own instead, and `apiTLS.enabled=false` turns TLS off on an isolated test network ([Without TLS](docs/pod-storage-server.md#without-tls)). Every chart option is in the [Helm values reference](docs/helm-values.md). Install cert-manager first:
 
 ```sh
 helm upgrade --install cert-manager oci://quay.io/jetstack/charts/cert-manager --version v1.21.2 \
